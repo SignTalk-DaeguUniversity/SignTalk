@@ -118,9 +118,10 @@ def generate_frames(interpreter, input_details, output_details, labels, lang_key
                             prev_idx = idx
                             last_prediction_time = current_time
 
-            display_text = f"현재: {latest_char[lang_key]} | 누적: {recognized_string[lang_key]}"
-            cv2.putText(image, display_text, (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            #디버깅용
+            #display_text = f"Current: {latest_char[lang_key]} | Accumulated: {recognized_string[lang_key]}"
+            #cv2.putText(image, display_text, (20, 40),
+            #            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
             ret, buffer = cv2.imencode('.jpg', image)
             frame = buffer.tobytes()
