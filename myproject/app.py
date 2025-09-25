@@ -15,6 +15,8 @@ from config import Config
 from auth.models import db
 from auth.routes import auth_bp, bcrypt
 from api.progress import progress_bp
+from api.learning import learning_bp
+from api.recognition import recognition_bp
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -28,6 +30,8 @@ CORS(app)  # Flutter와 통신을 위한 CORS 설정
 # 블루프린트 등록
 app.register_blueprint(auth_bp)
 app.register_blueprint(progress_bp)
+app.register_blueprint(learning_bp)
+app.register_blueprint(recognition_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
