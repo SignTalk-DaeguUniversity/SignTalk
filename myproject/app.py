@@ -27,6 +27,17 @@ bcrypt.init_app(app)
 jwt = JWTManager(app)
 CORS(app)  # Flutter와 통신을 위한 CORS 설정
 
+
+# JWT 블랙리스트 import
+from auth.routes import blacklisted_tokens
+
+# JWT 토큰 블랙리스트 체크 함수
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    """토큰이 블랙리스트에 있는지 확인"""
+    jti = jwt_payload['jti']
+    return jti in blacklisted_tokens
+    
 # 블루프린트 등록
 app.register_blueprint(auth_bp)
 app.register_blueprint(progress_bp)

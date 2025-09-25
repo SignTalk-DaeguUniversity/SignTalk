@@ -70,7 +70,6 @@ wheel==0.45.1
 wrapt==1.17.3
 pandas
 scikit-learn
-jamo==0.4.1
 #데이터베이스, 사용자관리 라이브러리
 flask-sqlalchemy==3.1.1
 flask-migrate==4.0.5
