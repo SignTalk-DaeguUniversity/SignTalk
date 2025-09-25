@@ -9,8 +9,40 @@ from deep_translator import GoogleTranslator
 from gtts import gTTS
 import subprocess
 from jamo import combine_hangul_jamo
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from config import Config
+from auth.models import db
+from auth.routes import auth_bp, bcrypt
+from api.progress import progress_bp
+from api.learning import learning_bp
+from api.recognition import recognition_bp
 
 app = Flask(__name__)
+app.config.from_object(Config)
+
+# 확장 초기화
+db.init_app(app)
+bcrypt.init_app(app)
+jwt = JWTManager(app)
+CORS(app)  # Flutter와 통신을 위한 CORS 설정
+
+
+# JWT 블랙리스트 import
+from auth.routes import blacklisted_tokens
+
+# JWT 토큰 블랙리스트 체크 함수
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    """토큰이 블랙리스트에 있는지 확인"""
+    jti = jwt_payload['jti']
+    return jti in blacklisted_tokens
+    
+# 블루프린트 등록
+app.register_blueprint(auth_bp)
+app.register_blueprint(progress_bp)
+app.register_blueprint(learning_bp)
+app.register_blueprint(recognition_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
@@ -118,9 +150,10 @@ def generate_frames(interpreter, input_details, output_details, labels, lang_key
                             prev_idx = idx
                             last_prediction_time = current_time
 
-            display_text = f"현재: {latest_char[lang_key]} | 누적: {recognized_string[lang_key]}"
-            cv2.putText(image, display_text, (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            #디버깅용
+            #display_text = f"Current: {latest_char[lang_key]} | Accumulated: {recognized_string[lang_key]}"
+            #cv2.putText(image, display_text, (20, 40),
+            #            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
             ret, buffer = cv2.imencode('.jpg', image)
             frame = buffer.tobytes()
