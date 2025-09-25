@@ -9,8 +9,25 @@ from deep_translator import GoogleTranslator
 from gtts import gTTS
 import subprocess
 from jamo import combine_hangul_jamo
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from config import Config
+from auth.models import db
+from auth.routes import auth_bp, bcrypt
+from api.progress import progress_bp
 
 app = Flask(__name__)
+app.config.from_object(Config)
+
+# 확장 초기화
+db.init_app(app)
+bcrypt.init_app(app)
+jwt = JWTManager(app)
+CORS(app)  # Flutter와 통신을 위한 CORS 설정
+
+# 블루프린트 등록
+app.register_blueprint(auth_bp)
+app.register_blueprint(progress_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
