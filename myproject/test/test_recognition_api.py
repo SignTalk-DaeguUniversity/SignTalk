@@ -168,22 +168,3 @@ if __name__ == "__main__":
     
     print("\n🎉 실시간 인식 API 테스트 완료!")
 
-
-def test_hand_shape_analysis(token):
-    """손모양 분석 테스트"""
-    print("\n=== 손모양 분석 테스트 ===")
-    url = f"{BASE_URL}/api/recognition/analyze-hand"
-    headers = {"Authorization": f"Bearer {token}"}
-    data = {
-        "target_sign": "A",
-        "language": "asl",
-        "session_id": "test-session-123",
-        "image_data": "dummy_image_data"
-    }
-    
-    try:
-        response = requests.post(url, json=data, headers=headers)
-        print(f"Status Code: {response.status_code}")
-        print(f"Response: {response.json()}")
-    except Exception as e:
-        print(f"❌ 오류: {e}")
