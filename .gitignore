@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Virtual env
+signtalk_env/
+
+# Models and large artifacts
+ksl_model_train/model/
+*.h5
+*.tflite
+*.npy
+
+# Data backups and misc
+ksl_model_train/data/_backup/

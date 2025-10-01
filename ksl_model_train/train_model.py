@@ -3,7 +3,7 @@ import numpy as np
 import os
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.callbacks import EarlyStopping
@@ -55,8 +55,9 @@ print(f"Label classes: {labels_original_order}")
 print(f"Number of classes: {len(labels_original_order)}")
 
 if len(X) > 1:
+    # NOTE: stratify should use class indices, not one-hot vectors.
     X_train, X_val, y_train_cat, y_val_cat = train_test_split(
-        X, y_cat, test_size=0.2, stratify=y_cat, random_state=42
+        X, y_cat, test_size=0.2, stratify=y_encoded, random_state=42
     )
     print(f"\nTraining set size: {X_train.shape[0]}")
     print(f"Validation set size: {X_val.shape[0]}")
@@ -64,9 +65,27 @@ else:
     X_train, y_train_cat = X, y_cat
     X_val, y_val_cat = None, None
 
+# === Preprocessing: Standardization (save mean/std for inference) ===
+feature_mean = np.mean(X_train, axis=0)
+feature_std = np.std(X_train, axis=0) + 1e-8
+X_train = (X_train - feature_mean) / feature_std
+if X_val is not None:
+    X_val = (X_val - feature_mean) / feature_std
+
+# Save normalization stats
+base_dir = os.path.dirname(__file__)
+output_model_dir = os.path.join(base_dir, "model")
+os.makedirs(output_model_dir, exist_ok=True)
+np.save(os.path.join(output_model_dir, "ksl_norm_mean.npy"), feature_mean.astype(np.float32))
+np.save(os.path.join(output_model_dir, "ksl_norm_std.npy"), feature_std.astype(np.float32))
+print("Saved normalization stats to model/ (ksl_norm_mean.npy, ksl_norm_std.npy)")
+
+# === Model: lightweight for Raspberry Pi 3 ===
 model = Sequential([
-    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
-    Dense(64, activation='relu'),
+    Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+    Dropout(0.2),
+    Dense(32, activation='relu'),
+    Dropout(0.2),
     Dense(y_cat.shape[1], activation='softmax')
 ])
 model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
@@ -74,16 +93,18 @@ model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accur
 early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
 
 if X_val is not None and y_val_cat is not None:
-    history = model.fit(X_train, y_train_cat, epochs=50, batch_size=16,
-                        validation_data=(X_val, y_val_cat),
-                        callbacks=[early_stopping])
+    history = model.fit(
+        X_train, y_train_cat,
+        epochs=100,
+        batch_size=32,
+        validation_data=(X_val, y_val_cat),
+        callbacks=[early_stopping],
+        verbose=1,
+    )
 else:
-    history = model.fit(X_train, y_train_cat, epochs=50, batch_size=16)
+    history = model.fit(X_train, y_train_cat, epochs=100, batch_size=32, verbose=1)
 
 # === 모델 저장 ===
-output_model_dir = os.path.join(base_dir, "model")  # 현재 디렉토리의 model/ 폴더
-os.makedirs(output_model_dir, exist_ok=True)
-
 model.save(os.path.join(output_model_dir, "ksl_model.h5"))
 np.save(os.path.join(output_model_dir, "ksl_labels.npy"), labels_original_order)
 

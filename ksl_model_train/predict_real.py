@@ -6,8 +6,10 @@ from PIL import ImageFont, ImageDraw, Image
 import os
 
 # 기본 설정
-MODEL_PATH = "model/asl_model.h5"
-LABELS_PATH = "model/labels.npy"
+MODEL_PATH = "model/ksl_model.h5"
+LABELS_PATH = "model/ksl_labels.npy"
+NORM_MEAN_PATH = "model/ksl_norm_mean.npy"
+NORM_STD_PATH = "model/ksl_norm_std.npy"
 FONT_FILENAME = "NanumGothic.ttf"
 DEFAULT_FONT_PATH = os.path.join(os.path.dirname(__file__), FONT_FILENAME)
 FONT_SIZE = 60
@@ -15,10 +17,12 @@ TEXT_POSITION = (50, 30)
 TEXT_COLOR_RGB = (0, 0, 255)
 BOX_COLOR_BGR = (255, 0, 0)
 
-# 모델과 라벨 로딩
+# 모델, 라벨, 정규화 통계 로딩
 try:
     model = load_model(MODEL_PATH)
     labels = np.load(LABELS_PATH, allow_pickle=True)
+    norm_mean = np.load(NORM_MEAN_PATH)
+    norm_std = np.load(NORM_STD_PATH)
 except Exception as e:
     print(f"Error loading model or labels: {e}")
     exit()
@@ -95,7 +99,10 @@ while cap.isOpened():
                     coords.extend([lm.x, lm.y])
 
                 if len(coords) == model.input_shape[1]:
-                    coords_array = np.array(coords).reshape(1, -1)
+                    coords_array = np.array(coords, dtype=np.float32).reshape(1, -1)
+                    # 정규화 적용: (x - mean) / std
+                    if norm_mean is not None and norm_std is not None and norm_mean.shape[0] == coords_array.shape[1]:
+                        coords_array = (coords_array - norm_mean) / (norm_std + 1e-8)
                     prediction = model.predict(coords_array)
                     char_index = np.argmax(prediction)
 
