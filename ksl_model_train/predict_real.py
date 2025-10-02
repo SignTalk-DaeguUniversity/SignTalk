@@ -5,13 +5,16 @@ from tensorflow.keras.models import load_model
 from PIL import ImageFont, ImageDraw, Image
 import os
 
+"""All file paths are resolved relative to this script directory."""
+BASE_DIR = os.path.dirname(__file__)
+
 # 기본 설정
-MODEL_PATH = "model/ksl_model.h5"
-LABELS_PATH = "model/ksl_labels.npy"
-NORM_MEAN_PATH = "model/ksl_norm_mean.npy"
-NORM_STD_PATH = "model/ksl_norm_std.npy"
+MODEL_PATH = os.path.join(BASE_DIR, "model", "ksl_model.h5")
+LABELS_PATH = os.path.join(BASE_DIR, "model", "ksl_labels.npy")
+NORM_MEAN_PATH = os.path.join(BASE_DIR, "model", "ksl_norm_mean.npy")
+NORM_STD_PATH = os.path.join(BASE_DIR, "model", "ksl_norm_std.npy")
 FONT_FILENAME = "NanumGothic.ttf"
-DEFAULT_FONT_PATH = os.path.join(os.path.dirname(__file__), FONT_FILENAME)
+DEFAULT_FONT_PATH = os.path.join(BASE_DIR, FONT_FILENAME)
 FONT_SIZE = 60
 TEXT_POSITION = (50, 30)
 TEXT_COLOR_RGB = (0, 0, 255)
