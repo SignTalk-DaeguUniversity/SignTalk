@@ -1,4 +1,4 @@
-"""실제 운영용 데이터베이스 테이블 생성"""
+## 데이터베이스 생성 
 from flask import Flask
 from config import Config
 
