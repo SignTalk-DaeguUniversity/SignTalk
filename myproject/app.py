@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, jsonify
+from flask import Flask, render_template, Response, jsonify, request
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -82,22 +82,29 @@ latest_char = {"asl": "", "ksl": ""}
 
 # ==== 공통 영상 스트리밍 ====
 def generate_frames(interpreter, input_details, output_details, labels, lang_key):
+    # 안드로이드 에뮬레이터 최적화 설정
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    # 낮은 해상도로 성능 향상
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+    cap.set(cv2.CAP_PROP_FPS, 15)  # FPS 제한으로 CPU 부하 감소
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    
+    # 버퍼 크기 최소화 (지연 감소)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     if not cap.isOpened():
         print("❌ 카메라 열기 실패")
         return
 
     last_prediction_time = 0
-    prediction_interval = 2  # seconds
+    prediction_interval = 1.5  # 더 빠른 인식 간격
     prev_idx = -1
     process_active = True
     last_switch_time = time.time()
-    active_duration = 2
-    inactive_duration = 2
+    active_duration = 3  # 더 긴 활성화 시간
+    inactive_duration = 1  # 더 짧은 휴식 시간
 
     try:
         while True:
@@ -108,6 +115,8 @@ def generate_frames(interpreter, input_details, output_details, labels, lang_key
             if len(frame.shape) == 2 or frame.shape[2] == 1:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
+            # 이미지 크기 추가 축소 (성능 향상)
+            frame = cv2.resize(frame, (320, 240))
             image = cv2.flip(frame, 1)
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             current_time = time.time()
@@ -204,6 +213,94 @@ def remove_char(lang):
 def clear_string(lang):
     recognized_string[lang] = ""
     return jsonify({'success': True})
+
+@app.route('/upload_image/<lang>', methods=['POST'])
+def upload_image(lang):
+    """디바이스 카메라에서 촬영한 이미지를 받아서 수어 인식 처리"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image file provided'}), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'error': 'No image file selected'}), 400
+        
+        # 이미지 파일을 numpy 배열로 변환
+        import numpy as np
+        from PIL import Image
+        import io
+        
+        # 파일을 메모리에서 읽기
+        image_bytes = file.read()
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # OpenCV 형식으로 변환
+        image_array = np.array(image)
+        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+            # RGB to BGR 변환 (OpenCV는 BGR 사용)
+            image_array = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        
+        # 수어 인식 처리
+        result = process_uploaded_image(image_array, lang)
+        
+        return jsonify({
+            'success': True,
+            'recognized_character': result.get('character', ''),
+            'confidence': result.get('confidence', 0.0)
+        })
+        
+    except Exception as e:
+        print(f"❌ 이미지 업로드 처리 실패: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def process_uploaded_image(image, lang):
+    """업로드된 이미지에서 수어 인식 처리"""
+    try:
+        # 언어별 모델 선택
+        if lang == 'ksl':
+            interpreter = ksl_interpreter
+            labels = labels_ksl
+            input_details = ksl_input_details
+            output_details = ksl_output_details
+        else:
+            # ASL 모델이 있다면 여기서 처리
+            return {'character': '', 'confidence': 0.0}
+        
+        if interpreter is None:
+            return {'character': '', 'confidence': 0.0}
+        
+        # 이미지 크기 조정
+        image = cv2.resize(image, (320, 240))
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # MediaPipe로 손 랜드마크 추출
+        result = hands.process(rgb_image)
+        
+        if result.multi_hand_landmarks:
+            for hand_landmarks in result.multi_hand_landmarks:
+                # 좌표 추출
+                coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
+                input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                
+                # 모델 추론
+                interpreter.set_tensor(input_details[0]['index'], input_data)
+                interpreter.invoke()
+                prediction = interpreter.get_tensor(output_details[0]['index'])
+                
+                idx = np.argmax(prediction)
+                confidence = float(np.max(prediction))
+                
+                if 0 <= idx < len(labels):
+                    character = labels[idx]
+                    # 전역 변수 업데이트
+                    latest_char[lang] = character
+                    return {'character': character, 'confidence': confidence}
+        
+        return {'character': '', 'confidence': 0.0}
+        
+    except Exception as e:
+        print(f"❌ 이미지 처리 실패: {e}")
+        return {'character': '', 'confidence': 0.0}
 
 @app.route('/translate/<lang>')
 def translate(lang):
