@@ -17,6 +17,7 @@ from auth.routes import auth_bp, bcrypt
 from api.progress import progress_bp
 from api.learning import learning_bp
 from api.recognition import recognition_bp
+from api.quiz import quiz_bp
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -43,6 +44,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(progress_bp)
 app.register_blueprint(learning_bp)
 app.register_blueprint(recognition_bp)
+app.register_blueprint(quiz_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
@@ -59,7 +61,7 @@ try:
     ksl_output_details = ksl_interpreter.get_output_details()
     labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
 
-    print("✅ ASL, KSL 모델 및 라벨 로딩 성공")
+    print(" KSL 모델 및 라벨 로딩 성공")
 except Exception as e:
     print(f"❌ 모델 로딩 실패: {e}")
     print("📱 API 서버만 실행됩니다 (수어 인식 기능 비활성화)")
