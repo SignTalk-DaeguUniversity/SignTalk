@@ -94,6 +94,15 @@ BASE_TO_TENSE = {
 }
 BASE_MAJORITY_MIN = 0.65  # require >=65% of recent frames to share base label
 
+# Mapping vowel transition -> compound vowel
+VOWEL_TRANSITION = {
+    ("ㅗ", "ㅏ"): "ㅘ",
+    ("ㅗ", "ㅐ"): "ㅙ",
+    ("ㅜ", "ㅓ"): "ㅝ",
+    ("ㅜ", "ㅔ"): "ㅞ",
+}
+TRANSITION_MIN_FRAC = 0.5  # require >=50% of each half to match start/end vowel
+
 def majority_label(labels_list):
     if not labels_list:
         return None
@@ -103,6 +112,32 @@ def majority_label(labels_list):
     label, cnt = max(counts.items(), key=lambda x: x[1])
     frac = cnt / max(1, len(labels_list))
     return label, frac
+
+def detect_vowel_transition(labels_list, min_frac=TRANSITION_MIN_FRAC):
+    """Detect vowel transition pattern in label sequence."""
+    if not labels_list or len(labels_list) < 4:
+        return None
+    mid = len(labels_list) // 2
+    first_half = labels_list[:mid]
+    second_half = labels_list[mid:]
+    
+    # Get majority in each half
+    start_info = majority_label(first_half)
+    end_info = majority_label(second_half)
+    
+    if not start_info or not end_info:
+        return None
+    
+    start_vowel, start_frac = start_info
+    end_vowel, end_frac = end_info
+    
+    # Check if both fractions meet threshold and transition exists
+    if start_frac >= min_frac and end_frac >= min_frac:
+        transition_key = (start_vowel, end_vowel)
+        if transition_key in VOWEL_TRANSITION:
+            return VOWEL_TRANSITION[transition_key]
+    
+    return None
 
 def count_motion_peaks(values, min_gap=MIN_GAP, max_gap=MAX_GAP, thresh_std=THRESH_STD):
     if not values:
@@ -212,10 +247,17 @@ while cap.isOpened():
         base_major = base_major_info[0] if base_major_info else None
         base_frac = base_major_info[1] if base_major_info else 0.0
         final_label = base_major
-        if base_major in BASE_TO_TENSE and base_frac >= BASE_MAJORITY_MIN:
+        
+        # Check vowel transition first (higher priority)
+        transition_vowel = detect_vowel_transition(list(base_label_buffer))
+        if transition_vowel:
+            final_label = transition_vowel
+        # Then check tense consonant promotion
+        elif base_major in BASE_TO_TENSE and base_frac >= BASE_MAJORITY_MIN:
             peak_count, peak_idx = count_motion_peaks(list(motion_buffer))
             if peak_count >= MIN_PEAKS:
                 final_label = BASE_TO_TENSE[base_major]
+        
         if final_label is None:
             print("🖐️ 손이 인식되지 않았습니다. 다시 시도하세요.")
             latest_char = ""
