@@ -1,14 +1,10 @@
 # 깃 가져오는 법 
 
-## 1. 브렌치를 로컬로 가져오기
+## 1. 특정 브렌치의 폴더 가져오기 
 git fetch origin 가져오고싶은폴더가있는브렌치
 
-git checkout origin/feature/가져오고싶은폴더있는브렌치 -- front/
+git checkout origin/feature/가져오고싶은폴더있는브렌치 -- 가지고오고싶은폴더/
 
-## 2. 다시 원래 브렌치로 돌아가서 복사 
-git checkout feature/cheeun
-
-git checkout 가져오고싶은폴더가있는브렌치 -- 가져오고싶은폴더
 
 
 /opt/homebrew/bin/python3.12 -m venv signtalk_env
@@ -32,6 +28,7 @@ flutter pub outdated
 ## 안드로이드 에뮬레이터
 flutter emulators --launch Pixel_7 
 flutter run
+
  # 데이터 베이스 테이블 생성
  cd /Users/kwoncheeun/Desktop/SignTalk/myproject
 python create_tables.py

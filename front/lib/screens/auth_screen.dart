@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../main.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
+  final bool isLogin;  // true: 로그인, false: 회원가입
+  
+  const AuthScreen({super.key, this.isLogin = true});
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -46,7 +49,11 @@ class _AuthScreenState extends State<AuthScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(
+      length: 2, 
+      vsync: this,
+      initialIndex: widget.isLogin ? 0 : 1,  // 로그인/회원가입 초기 탭 설정
+    );
   }
 
   @override
@@ -667,7 +674,13 @@ class _AuthScreenState extends State<AuthScreen>
 
     if (success && mounted) {
       // 로그인 성공 시 홈 화면으로 이동
-      Navigator.of(context).popUntil((route) => route.isFirst);
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (context) => const SignTalkHomePage(),
+        ),
+        (route) => false,  // 모든 이전 화면 제거
+      );
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('로그인되었습니다! 🎉'),
@@ -753,7 +766,13 @@ class _AuthScreenState extends State<AuthScreen>
 
     if (success && mounted) {
       // 회원가입 성공 시 홈 화면으로 이동
-      Navigator.of(context).popUntil((route) => route.isFirst);
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (context) => const SignTalkHomePage(),
+        ),
+        (route) => false,  // 모든 이전 화면 제거
+      );
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('회원가입이 완료되었습니다! 🎉'),

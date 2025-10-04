@@ -6,9 +6,9 @@ import 'auth_service.dart';
 class QuizResultService {
   // 다중 서버 주소 시도 시스템
   static const List<String> _baseUrls = [
-    'http://10.0.2.2:5000',  // 안드로이드 에뮬레이터용
-    'http://127.0.0.1:5000', // 로컬호스트
-    'http://localhost:5000', // 백업
+    'http://10.0.2.2:5002',  // 안드로이드 에뮬레이터용
+    'http://127.0.0.1:5002', // 로컬호스트
+    'http://localhost:5002', // 백업
   ];
 
   static String? _workingBaseUrl;
@@ -20,7 +20,7 @@ class QuizResultService {
 
     // 웹 플랫폼에서는 localhost 사용
     if (kIsWeb) {
-      _workingBaseUrl = 'http://localhost:5000';
+      _workingBaseUrl = 'http://localhost:5002';
       return _workingBaseUrl!;
     }
 

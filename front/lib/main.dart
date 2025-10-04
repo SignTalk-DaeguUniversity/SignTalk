@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mjpeg_view/mjpeg_view.dart';
+import 'package:camera/camera.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'providers/auth_provider.dart';
 import 'services/progress_service.dart';
 import 'services/quiz_result_service.dart';
@@ -12,7 +15,6 @@ import 'screens/auth_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/my_page_screen.dart';
 import 'services/recognition_service.dart';
-
 void main() {
   runApp(const SignTalkApp());
 }
@@ -43,6 +45,11 @@ class SignTalkHomePage extends StatefulWidget {
 
   @override
   State<SignTalkHomePage> createState() => _SignTalkHomePageState();
+  
+  // 스킵된 항목 접근을 위한 정적 메서드
+  static Set<String> getSkippedItems() {
+    return _SignTalkHomePageState._skippedItems;
+  }
 }
 
 class _SignTalkHomePageState extends State<SignTalkHomePage> {
@@ -51,7 +58,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   bool showQuizResult = false;
   String selectedQuizType = '';
   int currentQuestionIndex = 0;
-  int totalQuestions = 24;
+  int get totalQuestions => _getCurrentQuizData().length;
   int timeRemaining = 25;
   Timer? _timer;
   int correctAnswers = 0;
@@ -65,22 +72,44 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   int currentSequenceStep = 0;
   bool isSequenceCompleted = false;
   List<String> _currentQuizProblems = [];
-  
+
   // 낱말퀴즈용 섞인 문제 데이터
   List<Map<String, String>> _shuffledQuizData = [];
-  
+
   // 현재 퀴즈 데이터 가져오기 (낱말퀴즈는 섞인 데이터, 나머지는 원본)
   List<Map<String, String>> _getCurrentQuizData() {
-    if (selectedQuizType == '날말퀴즈' && _shuffledQuizData.isNotEmpty) {
+    if (selectedQuizType == '낱말퀴즈' && _shuffledQuizData.isNotEmpty) {
       return _shuffledQuizData;
     }
-    return quizData[selectedQuizType] ?? [];
+    final data = quizData[selectedQuizType] ?? [];
+    if (data.isEmpty) {
+      // 기본 데이터 반환
+      return [
+        {'type': '테스트', 'question': '테스트', 'description': '테스트 문제입니다'}
+      ];
+    }
+    return data;
+  }
+
+  // 안전한 현재 문제 데이터 가져오기
+  Map<String, String>? _getCurrentQuestion() {
+    final data = _getCurrentQuizData();
+    if (currentQuestionIndex >= 0 && currentQuestionIndex < data.length) {
+      return data[currentQuestionIndex];
+    }
+    return null;
   }
 
   // 카메라 스트림 관련 상태
   bool isCameraOn = false;
   String currentLanguage = 'ksl'; // 'ksl' 또는 'asl'
   String workingStreamUrl = ''; // 작동하는 스트림 URL
+
+  // 디바이스 카메라 관련 상태
+  bool useDeviceCamera = false; // 디바이스 카메라 사용 여부
+  CameraController? _cameraController;
+  List<CameraDescription>? _cameras;
+  bool _isCameraInitialized = false;
 
   // 인식 결과 관련 상태
   String currentRecognition = '';
@@ -95,6 +124,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   Map<String, dynamic>? handAnalysis;
   bool isAnalyzing = false;
   String? currentSessionId;
+  int? currentLearningSessionId; // 학습 세션 ID
+  DateTime? sessionStartTime; // 세션 시작 시간
+  int sessionAttempts = 0; // 세션 시도 횟수
+  int sessionCorrectAttempts = 0; // 세션 정답 횟수
 
   // 퀴즈 정답 관련 상태
   bool showCorrectAnswer = false;
@@ -107,63 +140,126 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   DateTime? lastProgressUpdate; // 마지막 진도 업데이트 시간
   bool isReviewMode = false; // 복습 모드 여부
   int? reviewLevelStep; // 복습 모드에서의 현재 단계
-  
+
+  Map<int, List<dynamic>>? curriculumData; // 백엔드에서 가져온 커리큘럼 데이터
+  bool isLoadingCurriculum = false; // 커리큘럼 로딩 상태
+
   // 레벨별 학습 구조 정의
   final Map<int, List<String>> levelStructure = {
-    1: ['ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ'], // 기초 자음 (7개)
-    2: ['ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'], // 고급 자음 (7개)
+    1: ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ'], // 기초 자음 + 된소리 (11개)
+    2: ['ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'], // 고급 자음 + 된소리 (8개)
     3: ['ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ'], // 기본 모음 (10개)
     4: ['ㅐ', 'ㅒ', 'ㅔ', 'ㅖ'], // 이중 모음 (4개)
     5: ['ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ'], // 복합 모음 (7개)
   };
-
   // 전체 학습 순서 (레벨 순서대로 합친 것)
   final List<String> learningSequence = [
-    // 레벨 1: 기초 자음 (7개)
-    'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ',
-    // 레벨 2: 고급 자음 (7개)
-    'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
+    // 레벨 1: 기초 자음 + 된소리 (11개)
+    'ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ',
+    // 레벨 2: 고급 자음 + 된소리 (8개)
+    'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
     // 레벨 3: 기본 모음 (10개)
     'ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ',
     // 레벨 4: 이중 모음 (4개)
     'ㅐ', 'ㅒ', 'ㅔ', 'ㅖ',
     // 레벨 5: 복합 모음 (7개)
-    'ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ'
+    'ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ',
   ];
 
   // 한글 분해 함수 (유니코드 기반)
   List<String> decomposeHangul(String word) {
     List<String> result = [];
-    
+
     // 한글 자음 테이블
     const List<String> chosung = [
-      'ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ',
-      'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+      'ㄱ',
+      'ㄲ',
+      'ㄴ',
+      'ㄷ',
+      'ㄸ',
+      'ㄹ',
+      'ㅁ',
+      'ㅂ',
+      'ㅃ',
+      'ㅅ',
+      'ㅆ',
+      'ㅇ',
+      'ㅈ',
+      'ㅉ',
+      'ㅊ',
+      'ㅋ',
+      'ㅌ',
+      'ㅍ',
+      'ㅎ',
     ];
-    
+
     // 한글 모음 테이블
     const List<String> jungsung = [
-      'ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ',
-      'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'
+      'ㅏ',
+      'ㅐ',
+      'ㅑ',
+      'ㅒ',
+      'ㅓ',
+      'ㅔ',
+      'ㅕ',
+      'ㅖ',
+      'ㅗ',
+      'ㅘ',
+      'ㅙ',
+      'ㅚ',
+      'ㅛ',
+      'ㅜ',
+      'ㅝ',
+      'ㅞ',
+      'ㅟ',
+      'ㅠ',
+      'ㅡ',
+      'ㅢ',
+      'ㅣ',
     ];
-    
+
     // 한글 받침 테이블
     const List<String> jongsung = [
-      '', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ',
-      'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ',
-      'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+      '',
+      'ㄱ',
+      'ㄲ',
+      'ㄳ',
+      'ㄴ',
+      'ㄵ',
+      'ㄶ',
+      'ㄷ',
+      'ㄹ',
+      'ㄺ',
+      'ㄻ',
+      'ㄼ',
+      'ㄽ',
+      'ㄾ',
+      'ㄿ',
+      'ㅀ',
+      'ㅁ',
+      'ㅂ',
+      'ㅄ',
+      'ㅅ',
+      'ㅆ',
+      'ㅇ',
+      'ㅈ',
+      'ㅊ',
+      'ㅋ',
+      'ㅌ',
+      'ㅍ',
+      'ㅎ',
     ];
-    
+
     for (int i = 0; i < word.length; i++) {
       int code = word.codeUnitAt(i);
-      
+
       // 한글 완성형 범위 체크 (가-힣)
       if (code >= 0xAC00 && code <= 0xD7A3) {
         int base = code - 0xAC00;
         int cho = base ~/ (21 * 28);
         int jung = (base % (21 * 28)) ~/ 28;
         int jong = base % 28;
-        
+
         result.add(chosung[cho]);
         result.add(jungsung[jung]);
         if (jong > 0) {
@@ -174,52 +270,91 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         result.add(word[i]);
       }
     }
-    
+
     return result;
   }
 
   // 동적 문제 생성을 위한 자음/모음 풀
   final List<String> availableChosung = [
-    'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+    'ㄱ',
+    'ㄴ',
+    'ㄷ',
+    'ㄹ',
+    'ㅁ',
+    'ㅂ',
+    'ㅅ',
+    'ㅇ',
+    'ㅈ',
+    'ㅊ',
+    'ㅋ',
+    'ㅌ',
+    'ㅍ',
+    'ㅎ',
   ];
-  
+
   final List<String> availableJungsung = [
-    'ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ', 'ㅐ', 'ㅔ'
+    'ㅏ',
+    'ㅑ',
+    'ㅓ',
+    'ㅕ',
+    'ㅗ',
+    'ㅛ',
+    'ㅜ',
+    'ㅠ',
+    'ㅡ',
+    'ㅣ',
+    'ㅐ',
+    'ㅔ',
   ];
-  
+
   final List<String> availableJongsung = [
-    'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+    'ㄱ',
+    'ㄴ',
+    'ㄷ',
+    'ㄹ',
+    'ㅁ',
+    'ㅂ',
+    'ㅅ',
+    'ㅇ',
+    'ㅈ',
+    'ㅊ',
+    'ㅋ',
+    'ㅌ',
+    'ㅍ',
+    'ㅎ',
   ];
 
   // 동적 문제 생성 함수
   List<String> generateUniqueProblems(String level, int count) {
     List<String> problems = [];
-    
+
     // 랜덤 셔플링으로 매번 다른 조합
     List<String> chosungPool = List.from(availableChosung)..shuffle();
     List<String> jungsungPool = List.from(availableJungsung)..shuffle();
     List<String> jongsungPool = List.from(availableJongsung)..shuffle();
-    
+
     for (int i = 0; i < count; i++) {
       if (level == '초급') {
         // 받침 없는 글자 생성
         if (chosungPool.isEmpty || jungsungPool.isEmpty) break;
-        
+
         String cho = chosungPool.removeAt(0);
         String jung = jungsungPool.removeAt(0);
-        
+
         String word = _combineHangul(cho, jung, '');
         problems.add(word);
-        
       } else if (level == '중급') {
         // 받침 있는 글자 생성 (자음, 모음, 받침 모두 중복 없이)
-        if (chosungPool.isEmpty || jungsungPool.isEmpty || jongsungPool.isEmpty) break;
-        
+        if (chosungPool.isEmpty || jungsungPool.isEmpty || jongsungPool.isEmpty)
+          break;
+
         String cho = chosungPool.removeAt(0);
         String jung = jungsungPool.removeAt(0);
-        
+
         // 받침은 이미 사용된 자음과 다른 것으로 선택
-        List<String> availableJong = jongsungPool.where((jong) => jong != cho).toList();
+        List<String> availableJong = jongsungPool
+            .where((jong) => jong != cho)
+            .toList();
         if (availableJong.isEmpty) {
           // 사용 가능한 받침이 없으면 받침 없는 글자로 생성
           String word = _combineHangul(cho, jung, '');
@@ -227,68 +362,149 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         } else {
           String jong = availableJong.first;
           jongsungPool.remove(jong); // 사용된 받침 제거
-          
+
           String word = _combineHangul(cho, jung, jong);
           problems.add(word);
         }
-        
       } else if (level == '고급') {
         // 2글자 단어 생성
         if (chosungPool.length < 2 || jungsungPool.length < 2) break;
-        
+
         String cho1 = chosungPool.removeAt(0);
         String jung1 = jungsungPool.removeAt(0);
         String cho2 = chosungPool.removeAt(0);
         String jung2 = jungsungPool.removeAt(0);
-        
+
         String word1 = _combineHangul(cho1, jung1, '');
         String word2 = _combineHangul(cho2, jung2, '');
-        
+
         problems.add(word1 + word2);
       }
     }
-    
+
     return problems;
   }
 
   // 한글 조합 함수 (자음 + 모음 + 받침 → 완성형 한글)
   String _combineHangul(String cho, String jung, String jong) {
     const List<String> chosungList = [
-      'ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ',
-      'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+      'ㄱ',
+      'ㄲ',
+      'ㄴ',
+      'ㄷ',
+      'ㄸ',
+      'ㄹ',
+      'ㅁ',
+      'ㅂ',
+      'ㅃ',
+      'ㅅ',
+      'ㅆ',
+      'ㅇ',
+      'ㅈ',
+      'ㅉ',
+      'ㅊ',
+      'ㅋ',
+      'ㅌ',
+      'ㅍ',
+      'ㅎ',
     ];
-    
+
     const List<String> jungsungList = [
-      'ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ',
-      'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'
+      'ㅏ',
+      'ㅐ',
+      'ㅑ',
+      'ㅒ',
+      'ㅓ',
+      'ㅔ',
+      'ㅕ',
+      'ㅖ',
+      'ㅗ',
+      'ㅘ',
+      'ㅙ',
+      'ㅚ',
+      'ㅛ',
+      'ㅜ',
+      'ㅝ',
+      'ㅞ',
+      'ㅟ',
+      'ㅠ',
+      'ㅡ',
+      'ㅢ',
+      'ㅣ',
     ];
-    
+
     const List<String> jongsungList = [
-      '', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ',
-      'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ',
-      'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'
+      '',
+      'ㄱ',
+      'ㄲ',
+      'ㄳ',
+      'ㄴ',
+      'ㄵ',
+      'ㄶ',
+      'ㄷ',
+      'ㄹ',
+      'ㄺ',
+      'ㄻ',
+      'ㄼ',
+      'ㄽ',
+      'ㄾ',
+      'ㄿ',
+      'ㅀ',
+      'ㅁ',
+      'ㅂ',
+      'ㅄ',
+      'ㅅ',
+      'ㅆ',
+      'ㅇ',
+      'ㅈ',
+      'ㅊ',
+      'ㅋ',
+      'ㅌ',
+      'ㅍ',
+      'ㅎ',
     ];
-    
+
     int choIndex = chosungList.indexOf(cho);
     int jungIndex = jungsungList.indexOf(jung);
     int jongIndex = jong.isEmpty ? 0 : jongsungList.indexOf(jong);
-    
+
     if (choIndex == -1 || jungIndex == -1 || jongIndex == -1) return '';
-    
+
     int code = 0xAC00 + (choIndex * 21 * 28) + (jungIndex * 28) + jongIndex;
     return String.fromCharCode(code);
   }
 
   // 고급 문제 풀 (실제 단어들)
   final List<String> advancedProblemsPool = [
-    '가족', '학교', '친구', '선생님', '사랑', '행복', '건강', '평화',
-    '자유', '희망', '꿈', '미래', '과거', '현재', '시간', '공간',
-    '음식', '물건', '사람', '동물', '식물', '바다', '하늘', '땅'
+    '가족',
+    '학교',
+    '친구',
+    '선생님',
+    '사랑',
+    '행복',
+    '건강',
+    '평화',
+    '자유',
+    '희망',
+    '꿈',
+    '미래',
+    '과거',
+    '현재',
+    '시간',
+    '공간',
+    '음식',
+    '물건',
+    '사람',
+    '동물',
+    '식물',
+    '바다',
+    '하늘',
+    '땅',
   ];
 
   // 난이도별 문제 데이터
   final Map<String, List<Map<String, String>>> quizData = {
-    '날말퀴즈': [
+    '낱말퀴즈': [
       // 자음 14개
       {'type': '자음', 'question': 'ㄱ', 'description': '위 자음을 수어로 표현해주세요'},
       {'type': '자음', 'question': 'ㄴ', 'description': '위 자음을 수어로 표현해주세요'},
@@ -345,6 +561,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     // 초기화 후 잠시 대기 후 진도 불러오기
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadUserProgress();
+      _initializeCamera();
     });
   }
 
@@ -353,7 +570,90 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     _timer?.cancel();
     _recognitionTimer?.cancel();
     _correctAnswerTimer?.cancel();
+    _cameraController?.dispose();
     super.dispose();
+  }
+
+  // 카메라 초기화 및 플랫폼 감지
+  Future<void> _initializeCamera() async {
+    try {
+      // 플랫폼 감지: 실제 기기인지 에뮬레이터인지 확인
+      useDeviceCamera = await _isRealDevice();
+
+      if (useDeviceCamera) {
+        // 실제 기기: 디바이스 카메라 사용
+        await _initializeDeviceCamera();
+      }
+
+      print('📱 카메라 모드: ${useDeviceCamera ? "디바이스 카메라" : "서버 스트림"}');
+    } catch (e) {
+      print('❌ 카메라 초기화 실패: $e');
+      useDeviceCamera = false; // 실패 시 서버 스트림 사용
+    }
+  }
+
+  // 실제 기기인지 확인
+  Future<bool> _isRealDevice() async {
+    try {
+      // Android: 테스트를 위해 서버 스트림 사용
+      if (Platform.isAndroid) {
+        // 테스트를 위해 서버 스트림 사용 (에뮬레이터 모드)
+        return false; // 서버 스트림으로 수어 인식 테스트
+      }
+      // iOS: 실제 기기에서는 디바이스 카메라 사용
+      else if (Platform.isIOS) {
+        return true; // 실제 기기에서는 디바이스 카메라 사용
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 디바이스 카메라 초기화
+  Future<void> _initializeDeviceCamera() async {
+    try {
+      // 카메라 권한 요청
+      final status = await Permission.camera.request();
+      if (!status.isGranted) {
+        print('❌ 카메라 권한이 거부되었습니다');
+        return;
+      }
+
+      // 사용 가능한 카메라 목록 가져오기
+      _cameras = await availableCameras();
+      if (_cameras == null || _cameras!.isEmpty) {
+        print('❌ 사용 가능한 카메라가 없습니다');
+        return;
+      }
+
+      // 전면 카메라 우선 선택 (수어 인식용)
+      CameraDescription selectedCamera = _cameras!.first;
+      for (var camera in _cameras!) {
+        if (camera.lensDirection == CameraLensDirection.front) {
+          selectedCamera = camera;
+          break;
+        }
+      }
+
+      // 카메라 컨트롤러 초기화
+      _cameraController = CameraController(
+        selectedCamera,
+        ResolutionPreset.medium, // 성능을 위해 중간 해상도 사용
+        enableAudio: false,
+      );
+
+      await _cameraController!.initialize();
+
+      setState(() {
+        _isCameraInitialized = true;
+      });
+
+      print('✅ 디바이스 카메라 초기화 완료');
+    } catch (e) {
+      print('❌ 디바이스 카메라 초기화 실패: $e');
+      _isCameraInitialized = false;
+    }
   }
 
   // 사용자 진도 불러오기 (KSL 고정)
@@ -450,10 +750,12 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     if (userProgress == null) {
       return {'level': 1, 'progress': 0, 'currentStep': 0};
     }
-    
-    final completedLessons = List<String>.from(userProgress!['completed_lessons'] ?? []);
+
+    final completedLessons = List<String>.from(
+      userProgress!['completed_lessons'] ?? [],
+    );
     Set<String> uniqueCompleted = completedLessons.toSet();
-    
+
     // 학습 순서대로 몇 개까지 완료했는지 확인
     int completedCount = 0;
     for (int i = 0; i < learningSequence.length; i++) {
@@ -463,15 +765,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         break; // 순서대로 완료하지 않았으면 중단
       }
     }
-    
+
     // 레벨별로 진도 계산
     int currentLevel = 1;
     int levelProgress = 0;
     int totalCompleted = completedCount;
-    
+
     for (int level = 1; level <= 5; level++) {
       int levelSize = levelStructure[level]!.length;
-      
+
       if (totalCompleted >= levelSize) {
         // 이 레벨 완료
         totalCompleted -= levelSize;
@@ -484,18 +786,30 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         break;
       }
     }
-    
+
     // 모든 레벨 완료 시
     if (currentLevel > 5) {
       currentLevel = 5;
       levelProgress = 100;
     }
-    
+
     return {
       'level': currentLevel,
       'progress': levelProgress,
-      'currentStep': completedCount.clamp(0, learningSequence.length - 1),
+      'currentStep': completedCount.clamp(0, learningSequence.length),
     };
+  }
+
+  // 완료된 문자 수에 따른 올바른 레벨 계산
+  int _calculateCorrectLevel(int completedCount) {
+    // 레벨별 문자 수: 레벨1(11개), 레벨2(8개), 레벨3(10개), 레벨4(4개), 레벨5(7개) = 40개
+    // 각 레벨을 완전히 마스터해야 다음 레벨로 진급
+    if (completedCount < 11) return 1; // 0-10개: 레벨 1 (진행중)
+    if (completedCount < 19) return 2; // 11-18개: 레벨 2 (레벨1 완료, 레벨2 진행중)
+    if (completedCount < 29) return 3; // 19-28개: 레벨 3 (레벨2 완료, 레벨3 진행중)
+    if (completedCount < 33) return 4; // 29-32개: 레벨 4 (레벨3 완료, 레벨4 진행중)
+    if (completedCount < 40) return 5; // 33-39개: 레벨 5 (레벨4 완료, 레벨5 진행중)
+    return 6; // 40개 이상: 전체 완료! 축하 다이얼로그 표시
   }
 
   // 백엔드 진도 데이터에서 현재 학습 단계 계산 (기존 함수 유지)
@@ -505,8 +819,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 현재 학습 단계의 수어 문자 가져오기
   String getCurrentLearningCharacter() {
-    int step = isReviewMode && reviewLevelStep != null 
-        ? reviewLevelStep! 
+    int step = isReviewMode && reviewLevelStep != null
+        ? reviewLevelStep!
         : _calculateCurrentStepFromProgress();
     if (step >= learningSequence.length) {
       return '완료';
@@ -516,8 +830,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 현재 학습 단계의 이미지 경로 가져오기
   String getCurrentLearningImagePath() {
-    int step = isReviewMode && reviewLevelStep != null 
-        ? reviewLevelStep! 
+    int step = isReviewMode && reviewLevelStep != null
+        ? reviewLevelStep!
         : _calculateCurrentStepFromProgress();
     if (step >= learningSequence.length) {
       return '';
@@ -528,20 +842,21 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 학습 진도 체크 및 업데이트
   void _checkLearningProgress() {
     if (!isLearningMode || currentRecognition.isEmpty) return;
-    
+
     // 쿨다운 체크 (3초 이내 중복 처리 방지)
-    if (lastProgressUpdate != null && 
+    if (lastProgressUpdate != null &&
         DateTime.now().difference(lastProgressUpdate!).inSeconds < 3) {
       return;
     }
-    
+
     String currentTarget = getCurrentLearningCharacter();
-    
+
     // 정답 체크
-    if (currentRecognition == currentTarget && currentRecognition.trim().isNotEmpty) {
+    if (currentRecognition == currentTarget &&
+        currentRecognition.trim().isNotEmpty) {
       // 마지막 업데이트 시간 기록
       lastProgressUpdate = DateTime.now();
-      
+
       if (isReviewMode) {
         // 복습 모드: 다음 문자로 이동
         _handleReviewProgress(currentTarget);
@@ -549,7 +864,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         // 일반 학습 모드: 백엔드 진도 업데이트
         _updateBackendProgress(currentTarget);
       }
-      
+
       // 인식 결과 초기화 (중복 처리 방지)
       setState(() {
         currentRecognition = '';
@@ -562,11 +877,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     setState(() {
       reviewLevelStep = reviewLevelStep! + 1;
     });
-    
+
     // 현재 복습 중인 레벨의 마지막 문자인지 확인
     int currentReviewLevel = _getCurrentReviewLevel();
     int levelEndIndex = _getLevelEndIndex(currentReviewLevel);
-    
+
     if (reviewLevelStep! > levelEndIndex) {
       // 레벨 복습 완료
       setState(() {
@@ -574,7 +889,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         reviewLevelStep = null;
         isLearningMode = false;
       });
-      
+
       // 레벨 5 완료 시 특별한 축하 메시지
       if (currentReviewLevel == 5) {
         _showAllLevelsCompletedDialog();
@@ -611,7 +926,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     int step = reviewLevelStep!;
     int currentLevel = 1;
     int totalSteps = 0;
-    
+
     for (int level = 1; level <= 5; level++) {
       int levelSize = levelStructure[level]!.length;
       if (step < totalSteps + levelSize) {
@@ -632,12 +947,62 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     return endIndex;
   }
 
+  // 스킵 시 로컬 진도 업데이트 (백엔드 API 없이 로컬에서만 처리)
+  void _updateLocalProgressForSkip(String skippedCharacter) {
+    try {
+      print('🔄 스킵 로컬 진도 업데이트: $skippedCharacter');
+      
+      // 현재 진도에서 완료된 레슨 가져오기
+      final completedLessons = List<String>.from(
+        userProgress?['completed_lessons'] ?? [],
+      );
+      
+      // 스킵된 항목을 완료된 레슨에 추가 (진도 계산을 위해)
+      Set<String> uniqueLessons = completedLessons.toSet();
+      if (!uniqueLessons.contains(skippedCharacter)) {
+        uniqueLessons.add(skippedCharacter);
+      }
+      
+      // 학습 순서대로 정렬
+      List<String> sortedLessons = learningSequence
+          .where((char) => uniqueLessons.contains(char))
+          .toList();
+      
+      // 레벨 계산 (완료 + 스킵 포함)
+      int currentLevel = _calculateCorrectLevel(sortedLessons.length);
+      
+      // 로컬 진도 업데이트 (점수는 추가하지 않음 - 스킵이므로)
+      setState(() {
+        userProgress = {
+          ...userProgress ?? {},
+          'completed_lessons': sortedLessons,
+          'level': currentLevel,
+          'total_score': userProgress?['total_score'] ?? 0, // 점수는 그대로 유지
+        };
+      });
+      
+      print('스킵 후 업데이트된 진도: ${userProgress?['completed_lessons']}');
+      
+      // 다음 학습 문자 확인
+      final nextCharacter = getCurrentLearningCharacter();
+      print('다음 학습 문자: $nextCharacter');
+      
+      if (nextCharacter == '완료') {
+        // 모든 학습 완료 시 축하 다이얼로그 표시
+        _showAllLevelsCompletedDialog();
+      }
+      
+    } catch (e) {
+      print('❌ 스킵 로컬 진도 업데이트 실패: $e');
+    }
+  }
+
   // 백엔드 진도 업데이트
   Future<void> _updateBackendProgress(String completedCharacter) async {
     try {
       print('🎯 진도 업데이트 시작: $completedCharacter');
       print('현재 진도: ${userProgress?['completed_lessons']}');
-      
+
       // 1. 인식 결과 저장
       await ProgressService.saveRecognition(
         language: 'ksl',
@@ -647,52 +1012,62 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       );
 
       // 2. 진도 업데이트 (레벨업 또는 완료된 레슨 추가)
-      final completedLessons = List<String>.from(userProgress?['completed_lessons'] ?? []);
-      
+      final completedLessons = List<String>.from(
+        userProgress?['completed_lessons'] ?? [],
+      );
+
       // 중복 제거
       Set<String> uniqueLessons = completedLessons.toSet();
-      
+
       // 이미 완료한 레슨이 아닌 경우만 추가
       if (!uniqueLessons.contains(completedCharacter)) {
         uniqueLessons.add(completedCharacter);
       }
-      
+
       // Set을 List로 변환 (순서 유지를 위해 학습 순서대로 정렬)
       List<String> sortedLessons = learningSequence
           .where((char) => uniqueLessons.contains(char))
           .toList();
-      
+
+      // 레벨별 구조에 맞게 레벨 계산
+      int currentLevel = _calculateCorrectLevel(sortedLessons.length);
+
       final newProgressData = {
         'completed_lessons': sortedLessons,
-        'level': (sortedLessons.length ~/ 5) + 1, // 5개마다 레벨업
+        'level': currentLevel,
         'total_score': (userProgress?['total_score'] ?? 0) + 10, // 점수 추가
       };
 
       print('새로운 진도 데이터: $newProgressData');
 
-      final result = await ProgressService.updateProgress('ksl', newProgressData);
-      
+      final result = await ProgressService.updateProgress(
+        'ksl',
+        newProgressData,
+      );
+
       print('진도 업데이트 결과: ${result['success']}');
-      
+
       if (result['success']) {
         // 3. UI 업데이트
         setState(() {
           userProgress = result['progress'];
         });
-        
+
         print('업데이트된 진도: ${userProgress?['completed_lessons']}');
 
         // 4. 성공 메시지 표시
         final nextCharacter = getCurrentLearningCharacter();
         print('다음 학습 문자: $nextCharacter');
-        
+
         if (nextCharacter == '완료') {
           // 모든 학습 완료 시 축하 다이얼로그 표시
           _showAllLevelsCompletedDialog();
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ 정답! "$completedCharacter" 학습 완료. 다음: $nextCharacter'),
+              content: Text(
+                '✅ 정답! "$completedCharacter" 학습 완료. 다음: $nextCharacter',
+              ),
               backgroundColor: Colors.green,
               duration: const Duration(seconds: 2),
             ),
@@ -725,7 +1100,6 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       }
     });
   }
-
   void _stopTimer() {
     _timer?.cancel();
   }
@@ -733,10 +1107,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   void _nextQuestion() {
     _correctAnswerTimer?.cancel();
 
-    if (currentQuestionIndex < totalQuestions - 1) {
+    final quizData = _getCurrentQuizData();
+    if (currentQuestionIndex < quizData.length - 1) {
       setState(() {
         currentQuestionIndex++;
-        
+
         if (isSequentialQuiz) {
           // 순차 퀴즈: 다음 단어로 이동
           if (currentQuestionIndex < _currentQuizProblems.length) {
@@ -750,7 +1125,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           // 기존 퀴즈
           timeRemaining = 25;
         }
-        
+
         showCorrectAnswer = false;
         isAnswerCorrect = false;
       });
@@ -769,7 +1144,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           totalTimeSpent = DateTime.now().difference(quizStartTime!).inSeconds;
         }
       });
-      
+
       // 퀴즈 결과 자동 저장
       _saveQuizResult();
     }
@@ -783,13 +1158,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       if (selectedQuizType == '날말퀴즈') {
         mode = '낱말퀴즈';
       }
-      
+
       // 넘긴 문제 수 계산 (총 문제 - 정답 = 오답 + 넘긴 문제)
       int skippedProblems = totalQuestions - correctAnswers;
-      
+
       // 정확도 계산
-      double accuracy = totalQuestions > 0 ? (correctAnswers / totalQuestions * 100) : 0;
-      
+      double accuracy = totalQuestions > 0
+          ? (correctAnswers / totalQuestions * 100)
+          : 0;
+
       print('🎯 퀴즈 결과 저장 중...');
       print('📝 모드: $mode');
       print('📊 총 문제: $totalQuestions개');
@@ -797,7 +1174,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       print('❌ 오답/넘긴: $skippedProblems개');
       print('📈 정확도: ${accuracy.toStringAsFixed(1)}%');
       print('⏱️ 소요시간: ${totalTimeSpent}초');
-      
+
       bool success = await QuizResultService.saveQuizResult(
         mode: mode,
         totalProblems: totalQuestions,
@@ -806,7 +1183,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         accuracy: accuracy,
         responseTime: totalTimeSpent,
       );
-      
+
       if (success) {
         print('✅ 퀴즈 결과 저장 완료!');
       } else {
@@ -837,16 +1214,130 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                     _buildModeSelector(),
 
                     const SizedBox(height: 16),
-
                     // Content based on mode
                     if (showQuizResult) ...[
                       // Quiz result screen
                       _buildQuizResultScreen(),
                     ] else if (isQuizStarted) ...[
-                      // Quiz screen
+                      // Quiz screen (문제 먼저)
                       _buildQuizScreen(),
+
+                      const SizedBox(height: 16),
+
+                      // Camera area (카메라 아래에)
+                      Container(
+                        height: 200,
+                        width: double.infinity,
+                        margin: const EdgeInsets.symmetric(horizontal: 0),
+                        child: _buildCameraArea(),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // 퀴즈 모드 버튼들 (카메라 밑에)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          // 퀴즈 중단 버튼
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  isQuizStarted = false;
+                                  showQuizResult = false;
+                                  selectedQuizType = "";
+                                  currentQuestionIndex = 0;
+                                  correctAnswers = 0;
+                                  _timer?.cancel();
+                                });
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("퀴즈를 중단했습니다"),
+                                    backgroundColor: Colors.red,
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                margin: const EdgeInsets.only(right: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.red,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.1),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.stop,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      "퀴즈 중단",
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          // 스킵 버튼
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _skipCurrentProblem,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                margin: const EdgeInsets.only(left: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.1),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.skip_next,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      "스킵",
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ] else if (isLearningMode) ...[
-                      // Learning mode content
+                      // Learning mode content (학습모드)
                       Container(
                         height: 200,
                         width: double.infinity,
@@ -858,13 +1349,12 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
                       // Recognition result area
                       _buildRecognitionArea(),
+
                     ] else ...[
                       // Quiz mode content
                       _buildQuizModeContent(),
                     ],
-
                     const SizedBox(height: 24),
-
                     // Bottom description
                     _buildBottomDescription(),
 
@@ -915,17 +1405,33 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 ),
               ),
               const SizedBox(width: 12),
-              ShaderMask(
-                shaderCallback: (bounds) => const LinearGradient(
-                  colors: [Color(0xFF6B73FF), Color(0xFF9F7AEA)],
-                ).createShader(bounds),
-                child: Text(
-                  'SignTalk',
-                  style: GoogleFonts.notoSans(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.white,
-                    letterSpacing: -0.5,
+              GestureDetector(
+                onTap: () {
+                  // 홈으로 리디렉션 (모든 상태 초기화)
+                  setState(() {
+                    isLearningMode = true;
+                    isQuizStarted = false;
+                    showQuizResult = false;
+                    selectedQuizType = '';
+                    currentQuestionIndex = 0;
+                    correctAnswers = 0;
+                    totalTimeSpent = 0;
+                    isReviewMode = false;
+                    reviewLevelStep = null;
+                  });
+                },
+                child: ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    colors: [Color(0xFF6B73FF), Color(0xFF9F7AEA)],
+                  ).createShader(bounds),
+                  child: Text(
+                    'SignTalk',
+                    style: GoogleFonts.notoSans(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: -0.5,
+                    ),
                   ),
                 ),
               ),
@@ -969,10 +1475,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 enabled: false,
                 child: Row(
                   children: [
-                    const Icon(Icons.person, size: 18, color: Color(0xFF4299E1)),
+                    const Icon(
+                      Icons.person,
+                      size: 18,
+                      color: Color(0xFF4299E1),
+                    ),
                     const SizedBox(width: 8),
                     Text(
-                      authProvider.user!.nickname ?? authProvider.user!.username,
+                      authProvider.user!.nickname ??
+                          authProvider.user!.username,
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF2D3748),
@@ -986,7 +1497,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 value: 'mypage',
                 child: Row(
                   children: [
-                    Icon(Icons.account_circle, size: 18, color: Color(0xFF4299E1)),
+                    Icon(
+                      Icons.account_circle,
+                      size: 18,
+                      color: Color(0xFF4299E1),
+                    ),
                     SizedBox(width: 8),
                     Text('마이페이지'),
                   ],
@@ -1019,7 +1534,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   const Icon(Icons.person, size: 18, color: Colors.white),
                   const SizedBox(width: 6),
                   Text(
-                    authProvider.user?.nickname ?? authProvider.user?.username ?? 'Unknown',
+                    authProvider.user?.nickname ??
+                        authProvider.user?.username ??
+                        'Unknown',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -1087,7 +1604,6 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       },
     );
   }
-
 
   Widget _buildModeSelector() {
     return Container(
@@ -1213,7 +1729,81 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
       ),
-      child: isCameraOn ? _buildCameraStream() : _buildCameraOffState(),
+      child: isCameraOn
+          ? (useDeviceCamera
+                ? _buildDeviceCameraStream()
+                : _buildCameraStream())
+          : _buildCameraOffState(),
+    );
+  }
+
+  // 디바이스 카메라 스트림 위젯
+  Widget _buildDeviceCameraStream() {
+    if (!_isCameraInitialized || _cameraController == null) {
+      return Container(
+        color: const Color(0xFFF0F0F0),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF9F7AEA)),
+              ),
+              SizedBox(height: 16),
+              Text(
+                '디바이스 카메라 초기화 중...',
+                style: TextStyle(color: Color(0xFF6B7280), fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Stack(
+        children: [
+          // 카메라 프리뷰
+          SizedBox(
+            width: double.infinity,
+            height: double.infinity,
+            child: CameraPreview(_cameraController!),
+          ),
+
+          // 상태 표시 오버레이
+          Positioned(
+            top: 12,
+            left: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '디바이스 카메라',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+        ],
+      ),
     );
   }
 
@@ -1252,7 +1842,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             height: double.infinity,
           ),
           // 학습 모드일 때 학습 이미지 표시 (왼쪽 상단)
-          if (isLearningMode && getCurrentLearningCharacter() != '완료') 
+          if (isLearningMode && getCurrentLearningCharacter() != '완료')
             Positioned(
               top: 8,
               left: 8,
@@ -1292,7 +1882,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 ),
               ),
             ),
-          
+
           // 컨트롤 버튼들
           Positioned(
             top: 8,
@@ -1321,20 +1911,31 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 const SizedBox(width: 8),
                 // 카메라 끄기 버튼
                 GestureDetector(
-                  onTap: _toggleCamera,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Icon(
-                      Icons.close,
-                      color: Colors.white,
-                      size: 16,
+                    onTap: _toggleCamera,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 16,
+                      ),
                     ),
                   ),
-                ),
+              ],
+            ),
+          ),
+
+          // 하단 버튼들 (스킵 + 다음 문제)
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
               ],
             ),
           ),
@@ -1363,21 +1964,22 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           style: const TextStyle(fontSize: 12, color: Color(0xFF9CA3AF)),
         ),
         const SizedBox(height: 20),
+        // 카메라 켜기 버튼
         ElevatedButton.icon(
-          onPressed: _toggleCamera,
-          icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
-          label: const Text(
-            '카메라 켜기',
-            style: TextStyle(color: Colors.white, fontSize: 14),
-          ),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF1F2937),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+            onPressed: _toggleCamera,
+            icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+            label: Text(
+              isCameraOn ? '카메라 끄기' : '카메라 켜기',
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1F2937),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -1386,8 +1988,14 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     setState(() {
       isCameraOn = !isCameraOn;
       if (isCameraOn) {
-        _findWorkingStreamUrl();
-        _startRecognitionPolling();
+        if (useDeviceCamera) {
+          // 디바이스 카메라 사용 시
+          _startDeviceCameraRecognition();
+        } else {
+          // 서버 스트림 사용 시
+          _findWorkingStreamUrl();
+          _startRecognitionPolling();
+        }
       } else {
         _stopRecognitionPolling();
         workingStreamUrl = '';
@@ -1395,12 +2003,112 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     });
   }
 
-  // 작동하는 스트림 URL 찾기
+  // 디바이스 카메라 인식 시작
+  void _startDeviceCameraRecognition() {
+    if (!_isCameraInitialized || _cameraController == null) {
+      print('❌ 디바이스 카메라가 초기화되지 않았습니다');
+      return;
+    }
+
+    // 디바이스 카메라 사용 시 이미지 캡처 및 전송 시작
+    _startImageCaptureAndUpload();
+    print('✅ 디바이스 카메라 인식 시작');
+  }
+
+  // 이미지 캡처 및 업로드 시작
+  void _startImageCaptureAndUpload() {
+    _recognitionTimer?.cancel();
+    _recognitionTimer = Timer.periodic(const Duration(seconds: 2), (
+      timer,
+    ) async {
+      await _captureAndUploadImage();
+    });
+  }
+
+  // 카메라 이미지 캡처 및 서버 업로드
+  Future<void> _captureAndUploadImage() async {
+    if (!_isCameraInitialized || _cameraController == null) {
+      return;
+    }
+
+    try {
+      // 이미지 캡처
+      final XFile imageFile = await _cameraController!.takePicture();
+
+      // 서버로 이미지 업로드
+      await _uploadImageToServer(imageFile);
+    } catch (e) {
+      print('❌ 이미지 캡처 실패: $e');
+    }
+  }
+
+  // 서버로 이미지 업로드
+  Future<void> _uploadImageToServer(XFile imageFile) async {
+    try {
+      List<String> serverUrls = [
+        'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+        'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
+        'http://10.0.2.2:5002',     // 에뮬레이터용
+        'http://localhost:5002',    // USB 디버깅 대안
+      ];
+
+      for (String baseUrl in serverUrls) {
+        try {
+          var request = http.MultipartRequest(
+            'POST',
+            Uri.parse('$baseUrl/upload_image/$currentLanguage'),
+          );
+
+          // 이미지 파일 추가
+          request.files.add(
+            await http.MultipartFile.fromPath('image', imageFile.path),
+          );
+
+          var response = await request.send().timeout(
+            const Duration(seconds: 5),
+          );
+
+          if (response.statusCode == 200) {
+            String responseBody = await response.stream.bytesToString();
+            final data = jsonDecode(responseBody);
+
+            if (data['success']) {
+              setState(() {
+                currentRecognition = data['recognized_character'] ?? '';
+              });
+
+              // 퀴즈 모드일 때 정답 확인
+              if (isQuizStarted && currentRecognition.isNotEmpty) {
+                _checkQuizAnswer();
+              }
+
+              // 학습 모드일 때 손모양 분석 및 진도 체크
+              if (isLearningMode && currentRecognition.isNotEmpty) {
+                _analyzeHandShape();
+                _checkLearningProgress();
+              }
+            }
+            return;
+          }
+        } catch (e) {
+          print('❌ $baseUrl 이미지 업로드 실패: $e');
+          continue;
+        }
+      }
+
+      print('❌ 모든 서버에 이미지 업로드 실패');
+    } catch (e) {
+      print('❌ 이미지 업로드 처리 실패: $e');
+    }
+  }
+
+  // 작동하는 스트림 URL 찾기 (USB 디버깅 우선)
   Future<void> _findWorkingStreamUrl() async {
     List<String> serverUrls = [
-      'http://127.0.0.1:5002',
-      'http://10.0.2.2:5002',
-      'http://localhost:5002',
+      'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+      'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
+      'http://10.0.2.2:5002',     // 에뮬레이터용
+      'http://localhost:5002',    // USB 디버깅 대안
     ];
 
     for (String baseUrl in serverUrls) {
@@ -1426,10 +2134,12 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     print('❌ 모든 서버 URL 연결 실패');
   }
 
-  // 인식 결과 폴링 시작
+  // 인식 결과 폴링 시작 (간격 최적화)
   void _startRecognitionPolling() {
     _recognitionTimer?.cancel();
-    _recognitionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _recognitionTimer = Timer.periodic(const Duration(milliseconds: 1500), (
+      timer,
+    ) {
       _fetchRecognitionResult();
     });
   }
@@ -1443,26 +2153,23 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     });
   }
 
-  // 백엔드에서 인식 결과 가져오기
+  // 백엔드에서 인식 결과 가져오기 (캐시된 URL 우선 사용)
   Future<void> _fetchRecognitionResult() async {
     try {
-      List<String> serverUrls = [
-        'http://10.0.2.2:5002',
-        'http://127.0.0.1:5002',
-        'http://localhost:5002',
-      ];
-
-      for (String baseUrl in serverUrls) {
+      // 이미 작동하는 URL이 있으면 우선 사용
+      if (workingStreamUrl.isNotEmpty) {
+        String baseUrl = workingStreamUrl.split('/video_feed')[0];
         try {
+          // 🆕 새로운 API 먼저 시도
           final response = await http
-              .get(Uri.parse('$baseUrl/get_string/$currentLanguage'))
-              .timeout(const Duration(seconds: 2));
+              .get(Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'))
+              .timeout(const Duration(seconds: 1));
 
           if (response.statusCode == 200) {
             final data = jsonDecode(response.body);
             setState(() {
-              currentRecognition = data['current'] ?? '';
-              recognitionString = data['string'] ?? '';
+              currentRecognition = data['current_character'] ?? '';
+              recognitionString = data['accumulated_string'] ?? '';
             });
 
             // 퀴즈 모드일 때 정답 확인
@@ -1475,11 +2182,94 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
               _analyzeHandShape();
               _checkLearningProgress();
             }
-
             return;
           }
         } catch (e) {
-          continue;
+          // 새 API 실패 시 기존 API로 폴백
+          try {
+            final response = await http
+                .get(Uri.parse('$baseUrl/get_string/$currentLanguage'))
+                .timeout(const Duration(seconds: 1));
+
+            if (response.statusCode == 200) {
+              final data = jsonDecode(response.body);
+              setState(() {
+                currentRecognition = data['current'] ?? '';
+                recognitionString = data['string'] ?? '';
+              });
+
+              if (isQuizStarted && currentRecognition.isNotEmpty) {
+                _checkQuizAnswer();
+              }
+              if (isLearningMode && currentRecognition.isNotEmpty) {
+                _analyzeHandShape();
+                _checkLearningProgress();
+              }
+              return;
+            }
+          } catch (e2) {
+            print('❌ 캐시된 URL 실패: $e2');
+          }
+        }
+      }
+
+      // 캐시된 URL이 실패하면 모든 URL 시도
+      List<String> serverUrls = [
+        'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+        'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
+        'http://10.0.2.2:5002',     // 에뮬레이터용
+        'http://localhost:5002',    // USB 디버깅 대안
+      ];
+
+      for (String baseUrl in serverUrls) {
+        try {
+          // 🆕 새로운 API 먼저 시도
+          final response = await http
+              .get(Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'))
+              .timeout(const Duration(seconds: 2));
+
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            setState(() {
+              currentRecognition = data['current_character'] ?? '';
+              recognitionString = data['accumulated_string'] ?? '';
+            });
+
+            if (isQuizStarted && currentRecognition.isNotEmpty) {
+              _checkQuizAnswer();
+            }
+            if (isLearningMode && currentRecognition.isNotEmpty) {
+              _analyzeHandShape();
+              _checkLearningProgress();
+            }
+            return;
+          }
+        } catch (e) {
+          // 새 API 실패 시 기존 API로 폴백
+          try {
+            final response = await http
+                .get(Uri.parse('$baseUrl/get_string/$currentLanguage'))
+                .timeout(const Duration(seconds: 2));
+
+            if (response.statusCode == 200) {
+              final data = jsonDecode(response.body);
+              setState(() {
+                currentRecognition = data['current'] ?? '';
+                recognitionString = data['string'] ?? '';
+              });
+
+              if (isQuizStarted && currentRecognition.isNotEmpty) {
+                _checkQuizAnswer();
+              }
+              if (isLearningMode && currentRecognition.isNotEmpty) {
+                _analyzeHandShape();
+                _checkLearningProgress();
+              }
+              return;
+            }
+          } catch (e2) {
+            continue;
+          }
         }
       }
     } catch (e) {
@@ -1496,8 +2286,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       _checkSequentialAnswer();
     } else {
       // 기존 퀴즈 체크
-      String correctAnswer =
-          _getCurrentQuizData()[currentQuestionIndex]['question']!;
+      final currentQuestion = _getCurrentQuestion();
+      if (currentQuestion == null) return;
+      
+      String correctAnswer = currentQuestion['question']!;
 
       if (currentRecognition == correctAnswer) {
         // 정답!
@@ -1517,10 +2309,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 순차 인식 퀴즈 정답 체크
   void _checkSequentialAnswer() {
-    if (currentSequenceStep >= expectedSequence.length || isSequenceCompleted) return;
+    if (currentSequenceStep >= expectedSequence.length || isSequenceCompleted)
+      return;
 
     String expectedChar = expectedSequence[currentSequenceStep];
-    
+
     if (currentRecognition == expectedChar) {
       setState(() {
         currentSequenceStep++;
@@ -1543,7 +2336,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         // 다음 단계로 진행
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ ${expectedChar} 정답! 다음: ${expectedSequence[currentSequenceStep]}'),
+            content: Text(
+              '✅ ${expectedChar} 정답! 다음: ${expectedSequence[currentSequenceStep]}',
+            ),
             backgroundColor: const Color(0xFF10B981),
             duration: const Duration(seconds: 1),
           ),
@@ -1555,7 +2350,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 순차 퀴즈 시작
   void _startSequentialQuiz(String level) {
     List<String> problems;
-    
+
     if (level == '고급') {
       // 고급은 실제 단어들에서 랜덤 선택
       List<String> shuffled = List.from(advancedProblemsPool)..shuffle();
@@ -1564,7 +2359,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       int count = level == '초급' ? 10 : (level == '중급' ? 10 : 8);
       problems = generateUniqueProblems(level, count);
     }
-    
+
     if (problems.isEmpty) return;
 
     setState(() {
@@ -1575,12 +2370,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       currentSequenceStep = 0;
       isSequenceCompleted = false;
       currentQuestionIndex = 0;
-      totalQuestions = problems.length;
       correctAnswers = 0;
       isQuizStarted = true;
       showQuizResult = false;
       timeRemaining = 30; // 순차 퀴즈는 30초
-      quizStartTime = DateTime.now(); // 퀴즈 시작 시간 기록
+      quizStartTime = DateTime.now().toLocal(); // 퀴즈 시작 시간 기록 (로컬 타임존으로 변환)
     });
 
     // 생성된 문제들을 임시 저장
@@ -1944,7 +2738,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   Widget _buildProgressInfo() {
     final totalScore = userProgress!['total_score'] ?? 0;
     final completedLessons = userProgress!['completed_lessons'] ?? [];
-    
+
     // 새로운 레벨 시스템으로 진도 계산
     final levelData = _calculateLevelProgress();
     final level = levelData['level'];
@@ -2069,11 +2863,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     );
   }
 
-
   Widget _buildLevelButtons() {
     final levelData = _calculateLevelProgress();
     final currentLevel = levelData['level'];
-    
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2092,27 +2885,29 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             final isCompleted = level < currentLevel;
             final isCurrent = level == currentLevel;
             final isLocked = level > currentLevel;
-            
+
             return Expanded(
               child: Padding(
                 padding: EdgeInsets.only(right: index < 4 ? 6 : 0),
                 child: GestureDetector(
-                  onTap: isCompleted || isCurrent ? () => _startLevelReview(level) : null,
+                  onTap: isCompleted || isCurrent
+                      ? () => _startLevelReview(level)
+                      : null,
                   child: Container(
                     height: 32,
                     decoration: BoxDecoration(
-                      color: isCompleted 
+                      color: isCompleted
                           ? const Color(0xFF10B981).withOpacity(0.1)
-                          : isCurrent 
-                              ? const Color(0xFF3B82F6).withOpacity(0.1)
-                              : const Color(0xFFF7FAFC),
+                          : isCurrent
+                          ? const Color(0xFF3B82F6).withOpacity(0.1)
+                          : const Color(0xFFF7FAFC),
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(
-                        color: isCompleted 
+                        color: isCompleted
                             ? const Color(0xFF10B981)
-                            : isCurrent 
-                                ? const Color(0xFF3B82F6)
-                                : const Color(0xFFE2E8F0),
+                            : isCurrent
+                            ? const Color(0xFF3B82F6)
+                            : const Color(0xFFE2E8F0),
                         width: 1,
                       ),
                     ),
@@ -2147,11 +2942,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
-                              color: isCompleted 
+                              color: isCompleted
                                   ? const Color(0xFF10B981)
-                                  : isCurrent 
-                                      ? const Color(0xFF3B82F6)
-                                      : const Color(0xFFCBD5E0),
+                                  : isCurrent
+                                  ? const Color(0xFF3B82F6)
+                                  : const Color(0xFFCBD5E0),
                             ),
                           ),
                         ],
@@ -2173,20 +2968,22 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     for (int i = 1; i < level; i++) {
       startIndex += levelStructure[i]!.length;
     }
-    
+
     setState(() {
       isReviewMode = true;
       reviewLevelStep = startIndex;
       isLearningMode = true; // 학습 모드도 활성화
     });
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
             Icon(Icons.school, color: Colors.white, size: 20),
             const SizedBox(width: 8),
-            Text('레벨 $level 복습을 시작합니다! ${learningSequence[startIndex]}부터 시작해요.'),
+            Text(
+              '레벨 $level 복습을 시작합니다! ${learningSequence[startIndex]}부터 시작해요.',
+            ),
           ],
         ),
         backgroundColor: const Color(0xFF3B82F6),
@@ -2226,7 +3023,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                
+
                 // 축하 메시지
                 const Text(
                   '🎉 축하합니다! 🎉',
@@ -2238,7 +3035,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
-                
+
                 const Text(
                   '모든 레벨의 학습을\n완료하였습니다!!',
                   style: TextStyle(
@@ -2250,7 +3047,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
-                
+
                 // 완료 통계
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -2275,7 +3072,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                             ),
                           ),
                           Text(
-                            '35개 (100%)',
+                            '40개 (100%)',
                             style: const TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.bold,
@@ -2309,7 +3106,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                
+
                 // 복습 안내 메시지
                 const Text(
                   '이제 모든 레벨을\n복습해 보실 수 있습니다!',
@@ -2321,7 +3118,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
-                
+
                 // 확인 버튼
                 SizedBox(
                   width: double.infinity,
@@ -2392,7 +3189,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   String _getLevelDescription(int level) {
     switch (level) {
       case 1:
-        return '기초 자음 (ㄱ~ㅅ)';
+        return '기초 자음 + 된소리 (ㄱ~ㅆ)';
       case 2:
         return '고급 자음 (ㅇ~ㅎ)';
       case 3:
@@ -2675,7 +3472,6 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       ],
     );
   }
-
   Widget _buildStatCard(String value, String label, Color color) {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -2862,230 +3658,62 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
-              ],
-
-              if (isSequentialQuiz) ...[
-                // 순차 퀴즈 표시
-                Text(
-                  '$selectedQuizType 퀴즈',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF718096),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                Text(
-                  currentQuizWord,
-                  style: const TextStyle(
-                    fontSize: 72,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2D3748),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // 순차 진행 상태 표시 (자동 줄바꿈)
-                if (expectedSequence.isNotEmpty) ...[
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (int i = 0; i < expectedSequence.length; i++)
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: i < currentSequenceStep
-                                ? const Color(0xFF10B981)
-                                : i == currentSequenceStep
-                                    ? const Color(0xFF3B82F6)
-                                    : const Color(0xFFF3F4F6),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: i == currentSequenceStep
-                                  ? const Color(0xFF3B82F6)
-                                  : Colors.transparent,
-                              width: 2,
-                            ),
-                          ),
-                          child: Text(
-                            expectedSequence[i],
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: i < currentSequenceStep
-                                  ? Colors.white
-                                  : i == currentSequenceStep
-                                      ? Colors.white
-                                      : const Color(0xFF9CA3AF),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                ],
-
-                Text(
-                  showCorrectAnswer && isAnswerCorrect
-                      ? '정답을 맞혔습니다! 다음 문제로 이동합니다...'
-                      : isSequenceCompleted
-                          ? '모든 단계를 완료했습니다!'
-                          : '${expectedSequence.isNotEmpty ? expectedSequence[currentSequenceStep] : ''} 수어를 표현해주세요',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: showCorrectAnswer && isAnswerCorrect
-                        ? const Color(0xFF10B981)
-                        : const Color(0xFF4A5568),
-                    fontWeight: showCorrectAnswer && isAnswerCorrect
-                        ? FontWeight.w600
-                        : FontWeight.normal,
-                  ),
-                ),
               ] else ...[
                 // 기존 퀴즈 표시
-                Text(
-                  _getCurrentQuizData()[currentQuestionIndex]['type']!,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF718096),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                Text(
-                  _getCurrentQuizData()[currentQuestionIndex]['question']!,
-                  style: const TextStyle(
-                    fontSize: 72,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2D3748),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                Text(
-                  showCorrectAnswer && isAnswerCorrect
-                      ? '정답을 맞혔습니다! 다음 문제로 이동합니다...'
-                      : _getCurrentQuizData()[currentQuestionIndex]['description']!,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: showCorrectAnswer && isAnswerCorrect
-                        ? const Color(0xFF10B981)
-                        : const Color(0xFF4A5568),
-                    fontWeight: showCorrectAnswer && isAnswerCorrect
-                        ? FontWeight.w600
-                        : FontWeight.normal,
-                  ),
+                Builder(
+                  builder: (context) {
+                    final currentQuestion = _getCurrentQuestion();
+                    if (currentQuestion == null) {
+                      return const Text(
+                        '문제를 불러오는 중...',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Color(0xFF718096),
+                        ),
+                      );
+                    }
+                    
+                    return Column(
+                      children: [
+                        Text(
+                          currentQuestion['type']!,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Color(0xFF718096),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          currentQuestion['question']!,
+                          style: const TextStyle(
+                            fontSize: 72,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF2D3748),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          showCorrectAnswer && isAnswerCorrect
+                              ? '정답을 맞혔습니다! 다음 문제로 이동합니다...'
+                              : currentQuestion['description']!,
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: showCorrectAnswer && isAnswerCorrect
+                                ? const Color(0xFF10B981)
+                                : const Color(0xFF4A5568),
+                            fontWeight: showCorrectAnswer && isAnswerCorrect
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ],
           ),
-        ),
-
-        const SizedBox(height: 20),
-
-        // Camera area
-        Container(
-          width: double.infinity,
-          height: 200,
-          decoration: BoxDecoration(
-            color: const Color(0xFFF0F0F0),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
-          ),
-          child: isCameraOn ? _buildCameraStream() : _buildCameraOffState(),
-        ),
-
-        const SizedBox(height: 20),
-
-        // Bottom buttons
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () {
-                  _stopTimer();
-                  setState(() {
-                    isQuizStarted = false;
-                    showQuizResult = true;
-                    totalTimeSpent =
-                        ((currentQuestionIndex + 1) * 25) - timeRemaining;
-                  });
-                },
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  side: const BorderSide(color: Color(0xFFE2E8F0)),
-                ),
-                child: const Text(
-                  '퀴즈 중단',
-                  style: TextStyle(fontSize: 14, color: Color(0xFF718096)),
-                ),
-              ),
-            ),
-
-            const SizedBox(width: 8),
-
-            // 다음 문제 버튼 (정답을 못 맞췄을 때만 표시)
-            if (!showCorrectAnswer) ...[
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    _nextQuestion();
-                  },
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    side: const BorderSide(color: Color(0xFF3B82F6)),
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.skip_next, size: 18, color: Color(0xFF3B82F6)),
-                      SizedBox(width: 4),
-                      Text(
-                        '다음 문제',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF3B82F6),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _toggleCamera,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1F2937),
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: Text(
-                  isCameraOn ? '카메라 끄기' : '카메라 켜기',
-                  style: const TextStyle(fontSize: 14, color: Colors.white),
-                ),
-              ),
-            ),
-          ],
         ),
       ],
     );
@@ -3093,274 +3721,138 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   Widget _buildQuizModeContent() {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Quiz mode header
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x0A000000),
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF9F7AEA), Color(0xFFED64A6)],
-                      ),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Icon(
-                      Icons.quiz,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  const Text(
-                    '퀴즈 모드 선택',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF2D3748),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '원하는 난이도를 선택하여 수어 퀴즈에 도전해보세요',
-                style: TextStyle(fontSize: 14, color: Color(0xFF718096)),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        // Learning mode selection
-        const Text(
-          '학습 모드 선택',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF2D3748),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // Quiz level cards
-        _buildQuizLevelCard(
-          '날말퀴즈',
-          '24개 문제',
-          '한국어 자음과 모음 랜덤퀴즈',
-          const Color(0xFF6366F1),
-          Icons.text_fields,
-          () {
-            setState(() {
-              selectedQuizType = '날말퀴즈';
-              totalQuestions = 24;
-              isSequentialQuiz = false; // 일반 퀴즈 모드
-            });
-          },
-        ),
-
-        const SizedBox(height: 12),
-
-        _buildQuizLevelCard(
-          '초급',
-          '10개 문제',
-          '받침 없는 글자 (자음 + 모음)',
-          const Color(0xFF10B981),
-          Icons.looks_one,
-          () {
-            _startSequentialQuiz('초급');
-          },
-        ),
-
-        const SizedBox(height: 12),
-
-        _buildQuizLevelCard(
-          '중급',
-          '10개 문제',
-          '받침 있는 글자 (자음 + 모음 + 받침)',
-          const Color(0xFF3B82F6),
-          Icons.looks_two,
-          () {
-            _startSequentialQuiz('중급');
-          },
-        ),
-
-        const SizedBox(height: 12),
-
-        _buildQuizLevelCard(
-          '고급',
-          '8개 문제',
-          '여러 글자 단어 (순차 인식)',
-          const Color(0xFF8B5CF6),
-          Icons.looks_3,
-          () {
-            _startSequentialQuiz('고급');
-          },
-        ),
-
-        const SizedBox(height: 24),
-
-        // Quiz rules
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x0A000000),
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '퀴즈 규칙',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF2D3748),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _buildRuleItem('• 초급/중급/고급: 순차 인식 퀴즈 (30초)'),
-              _buildRuleItem('• 날말퀴즈: 단일 수어 인식 (25초)'),
-              _buildRuleItem('• 순차 퀴즈는 자음→모음→받침 순서로 인식'),
-              _buildRuleItem('• 카메라 앞에서 올바른 수어를 표현하세요'),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        // Start quiz button
-        Container(
-          width: double.infinity,
-          height: 56,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFF9F7AEA), Color(0xFFED64A6)],
-            ),
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x1A9F7AEA),
-                blurRadius: 8,
-                offset: Offset(0, 4),
-              ),
-            ],
-          ),
-          child: ElevatedButton(
-            onPressed: selectedQuizType.isNotEmpty
-                ? () {
-                    setState(() {
-                      // 낱말퀴즈인 경우 문제를 랜덤으로 섞기
-                      if (selectedQuizType == '날말퀴즈') {
-                        _shuffledQuizData = List.from(quizData[selectedQuizType]!)..shuffle();
-                      }
-                      isQuizStarted = true;
-                      currentQuestionIndex = 0;
-                      timeRemaining = 25;
-                      quizStartTime = DateTime.now(); // 퀴즈 시작 시간 기록
-                    });
-                    _startTimer();
-                  }
-                : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.transparent,
-              shadowColor: Colors.transparent,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            child: const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.play_arrow, color: Colors.white, size: 24),
-                SizedBox(width: 8),
-                Text(
-                  '퀴즈 시작',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        _buildQuizTypeButtons(),
       ],
     );
   }
 
-  Widget _buildQuizLevelCard(
-    String title,
-    String count,
-    String description,
-    Color color,
-    IconData icon,
-    VoidCallback onTap,
-  ) {
-    bool isSelected = selectedQuizType == title;
+  Widget _buildQuizTypeButtons() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 퀴즈 모드 선택 헤더
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF6B73FF), Color(0xFF9F7AEA)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.quiz,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '퀴즈 모드 선택',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    Text(
+                      '원하는 난이도를 선택하여 수어 퀴즈에 도전해보세요',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // 퀴즈 타입 카드들
+        _buildQuizTypeCard('낱말퀴즈', '24개 문제', '한국어 자음과 모음 랜덤퀴즈', 'Tr', const Color(0xFF6366F1)),
+        const SizedBox(height: 12),
+        _buildQuizTypeCard('초급', '10개 문제', '받침 없는 글자 (자음 + 모음)', '1', const Color(0xFF10B981)),
+        const SizedBox(height: 12),
+        _buildQuizTypeCard('중급', '10개 문제', '받침 있는 글자 (자음 + 모음 + 받침)', '2', const Color(0xFF3B82F6)),
+        const SizedBox(height: 12),
+        _buildQuizTypeCard('고급', '10개 문제', '복합 모음이 포함된 글자', '3', const Color(0xFFEF4444)),
+      ],
+    );
+  }
+
+  Widget _buildQuizTypeCard(String type, String problemCount, String description, String icon, Color color) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        setState(() {
+          selectedQuizType = type;
+          isQuizStarted = true;
+          currentQuestionIndex = 0;
+          correctAnswers = 0;
+          timeRemaining = 25;
+          totalTimeSpent = 0;
+          quizStartTime = DateTime.now();
+          
+          // 낱말퀴즈인 경우 데이터 섞기
+          if (type == '낱말퀴즈') {
+            _shuffledQuizData = List.from(quizData[type] ?? []);
+            _shuffledQuizData.shuffle();
+          }
+        });
+        _startTimer();
+      },
       child: Container(
-        width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? color : const Color(0xFFE2E8F0),
-            width: isSelected ? 2 : 1,
-          ),
           boxShadow: [
             BoxShadow(
-              color: isSelected
-                  ? color.withOpacity(0.1)
-                  : const Color(0x05000000),
-              blurRadius: isSelected ? 8 : 4,
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 4,
               offset: const Offset(0, 2),
             ),
           ],
         ),
         child: Row(
           children: [
+            // 아이콘 부분
             Container(
               width: 48,
               height: 48,
               decoration: BoxDecoration(
                 color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(icon, color: color, size: 24),
+              child: Center(
+                child: Text(
+                  icon,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+              ),
             ),
             const SizedBox(width: 16),
+            // 텍스트 부분
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3368,7 +3860,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   Row(
                     children: [
                       Text(
-                        title,
+                        type,
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -3377,7 +3869,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        count,
+                        problemCount,
                         style: TextStyle(
                           fontSize: 12,
                           color: color,
@@ -3390,7 +3882,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   Text(
                     description,
                     style: const TextStyle(
-                      fontSize: 13,
+                      fontSize: 12,
                       color: Color(0xFF718096),
                     ),
                   ),
@@ -3403,101 +3895,73 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     );
   }
 
-  Widget _buildRuleItem(String text) {
+  Widget _buildBottomDescription() {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 13,
-          color: Color(0xFF718096),
-          height: 1.4,
-        ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          RichText(
+            textAlign: TextAlign.center,
+            text: const TextSpan(
+              style: TextStyle(
+                fontSize: 14,
+                color: Color(0xFF6B7280),
+                height: 1.5,
+              ),
+              children: [
+                TextSpan(
+                  text: 'SignTalk',
+                  style: TextStyle(
+                    color: Color(0xFF4299E1), // 파란색
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                TextSpan(
+                  text: '은 한국 수어 학습을 위한 교육 플랫폼입니다. AI를 이용한 기반 인식 시스템으로 실전 같은 학습 경험을 제공합니다.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '자유로운 학습으로 가족을 다지고, 퀴즈로 실력을 검증하며, 자유로운 연습으로 완성해보세요!',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              color: Color(0xFF6B7280),
+              height: 1.5,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildBottomDescription() {
-    return Column(
-      children: [
-        RichText(
-          textAlign: TextAlign.center,
-          text: const TextSpan(
-            style: TextStyle(
-              fontSize: 14,
-              color: Color(0xFF4A5568),
-              height: 1.5,
-            ),
-            children: [
-              TextSpan(
-                text: 'SignTalk',
-                style: TextStyle(
-                  color: Color(0xFF4299E1),
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              TextSpan(
-                text:
-                    '은 한국 수어 학습을 위한 교육 플랫폼입니다. AI를 이용한 기반 인식 시스템으로 실전 같은 학습 경험을 제공합니다.',
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          '자유로운 학습으로 가족을 다지고, 퀴즈로 실력을 검증하며, 자유 연습으로 완성해보세요!',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 14, color: Color(0xFF718096), height: 1.5),
-        ),
-      ],
-    );
-  }
-
-  // 진도 초기화 확인 다이얼로그
   void _showResetProgressDialog() {
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Row(
-            children: [
-              Icon(
-                Icons.warning_amber_rounded,
-                color: const Color(0xFFE53E3E),
-                size: 24,
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                '진도 초기화',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
+          title: const Text('진도 초기화'),
           content: const Text(
-            '정말로 학습 진도를 초기화하시겠습니까?\n\n모든 진도와 점수가 삭제되고 ㄱ부터 다시 시작됩니다.\n이 작업은 되돌릴 수 없습니다.',
-            style: TextStyle(fontSize: 14, height: 1.5),
+            '학습 진도를 초기화하시겠습니까?\n'
+            '모든 진도가 삭제되고 처음부터 다시 시작됩니다.',
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text(
-                '취소',
-                style: TextStyle(color: Color(0xFF718096)),
-              ),
+              child: const Text('취소'),
             ),
-            ElevatedButton(
+            TextButton(
               onPressed: () {
                 Navigator.of(context).pop();
                 _resetProgress();
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFE53E3E),
-                foregroundColor: Colors.white,
+              child: const Text(
+                '초기화',
+                style: TextStyle(color: Colors.red),
               ),
-              child: const Text('초기화'),
             ),
           ],
         );
@@ -3505,48 +3969,68 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     );
   }
 
-  // 진도 초기화 실행 (로컬에서만 처리)
-  Future<void> _resetProgress() async {
+  void _resetProgress() {
     setState(() {
-      isLoadingProgress = true;
+      userProgress = {
+        'level': 1,
+        'score': 0,
+        'completed_lessons': [],
+      };
+      currentLearningStep = 0;
+      isLearningComplete = false;
     });
-
-    try {
-      // 로컬에서 진도 초기화
-      setState(() {
-        userProgress = {
-          'level': 1,
-          'total_score': 0,
-          'completed_lessons': [],
-        };
-        currentLearningStep = 0; // 학습 단계도 초기화
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(Icons.check_circle, color: Colors.white, size: 20),
-              const SizedBox(width: 8),
-              const Text('진도가 초기화되었습니다. ㄱ부터 다시 시작하세요!'),
-            ],
-          ),
-          backgroundColor: const Color(0xFF10B981),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('오류가 발생했습니다: $e'),
-          backgroundColor: const Color(0xFFE53E3E),
-        ),
-      );
-    } finally {
-      setState(() {
-        isLoadingProgress = false;
-      });
-    }
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('진도가 초기화되었습니다'),
+        backgroundColor: Colors.green,
+      ),
+    );
   }
 
+  // 스킵된 항목 관리를 위한 정적 메서드
+  static Set<String> _skippedItems = {};
+
+  // 스킵 기능
+  void _skipCurrentProblem() {
+    if (isLearningMode) {
+      // 학습 모드 스킵
+      String currentTarget = getCurrentLearningCharacter();
+      if (currentTarget != '완료') {
+        setState(() {
+          _skippedItems.add(currentTarget);
+        });
+        
+        // 스킵 후 로컬 진도 업데이트 (다음 단계로 이동)
+        _updateLocalProgressForSkip(currentTarget);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$currentTarget"를 스킵했습니다'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } else if (isQuizStarted) {
+      // 퀴즈 모드 스킵
+      final currentQuestion = _getCurrentQuestion();
+      if (currentQuestion != null) {
+        final skippedAnswer = currentQuestion['question'] ?? '';
+        setState(() {
+          _skippedItems.add(skippedAnswer);
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$skippedAnswer" 문제를 스킵했습니다'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+        
+        _nextQuestion();
+      }
+    }
+  }
 }

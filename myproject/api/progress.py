@@ -21,7 +21,17 @@ def get_progress(language):
         progress = Progress.query.filter_by(user_id=user_id, language=language).first()
         
         if not progress:
-            return jsonify({'error': '진도 정보를 찾을 수 없습니다.'}), 404
+            # 진도 정보가 없으면 자동으로 생성
+            progress = Progress(
+                user_id=user_id,
+                language=language,
+                level=1,
+                completed_lessons='[]',
+                total_score=0
+            )
+            db.session.add(progress)
+            db.session.commit()
+            print(f"✅ {language} 진도 정보 자동 생성: user_id={user_id}")
         
         return jsonify({'progress': progress.to_dict()}), 200
         

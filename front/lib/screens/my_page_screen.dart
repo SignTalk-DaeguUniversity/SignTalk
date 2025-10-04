@@ -4,6 +4,8 @@ import 'package:google_fonts/google_fonts.dart';
 import '../providers/auth_provider.dart';
 import '../services/progress_service.dart';
 import '../services/auth_service.dart';
+import '../services/quiz_service.dart';
+// import '../main.dart'; // 충돌 방지를 위해 제거
 
 class MyPageScreen extends StatefulWidget {
   const MyPageScreen({super.key});
@@ -17,11 +19,15 @@ class _MyPageScreenState extends State<MyPageScreen> {
   bool isLoadingProgress = false;
   bool isEditingNickname = false;
   final TextEditingController _nicknameController = TextEditingController();
+  bool showQuizStats = false; // 퀴즈 통계 표시 여부
+  Map<String, dynamic>? quizStatistics; // 퀴즈 통계 데이터
+  bool isLoadingQuizStats = false;
 
   @override
   void initState() {
     super.initState();
     _loadUserProgress();
+    _loadQuizStatistics();
   }
 
   @override
@@ -51,6 +57,101 @@ class _MyPageScreenState extends State<MyPageScreen> {
     }
   }
 
+  // 퀴즈 통계 불러오기 (백엔드 API 연동)
+  Future<void> _loadQuizStatistics() async {
+    setState(() {
+      isLoadingQuizStats = true;
+    });
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      if (!authProvider.isLoggedIn) {
+        print('❌ 로그인되지 않음 - 퀴즈 통계 로드 불가');
+        return;
+      }
+
+      final authService = AuthService();
+      final token = await authService.getToken();
+      
+      if (token == null) {
+        print('❌ 토큰 없음 - 퀴즈 통계 로드 불가');
+        return;
+      }
+
+      print('📊 백엔드에서 퀴즈 통계 로드 중...');
+      
+      // 백엔드 성취도 API 호출
+      final result = await QuizService.getAchievements('ksl');
+
+      if (result['success']) {
+        final achievements = result['achievements'] ?? [];
+        
+        // 기본 퀴즈 통계 설정
+        final defaultStats = {
+          'total_sessions': 0,
+          'average_accuracy': 0.0,
+          'total_achievements': achievements.length,
+          'mode_statistics': {
+            '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
+          },
+        };
+        
+        setState(() {
+          quizStatistics = defaultStats;
+        });
+        
+        print('✅ 퀴즈 통계 로드 완료: ${achievements.length}개 성취도');
+      } else {
+        print('❌ 퀴즈 통계 API 호출 실패: ${result['message']}');
+        
+        // 실패 시 빈 데이터 설정
+        setState(() {
+          quizStatistics = {
+            'total_sessions': 0,
+            'mode_statistics': {
+              '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
+              '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
+              '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
+              '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            }
+          };
+        });
+      }
+      
+    } catch (e) {
+      print('❌ 퀴즈 통계 로드 실패: $e');
+      
+      // 오류 시 빈 데이터 설정
+      setState(() {
+        quizStatistics = {
+          'total_sessions': 0,
+          'mode_statistics': {
+            '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
+          }
+        };
+      });
+    } finally {
+      setState(() {
+        isLoadingQuizStats = false;
+      });
+    }
+  }
+
+  // 테스트 데이터 생성 (백엔드 API로 대체 예정)
+  Future<void> _generateTestDataIfNeeded() async {
+    try {
+      print('📊 테스트 데이터 생성 (백엔드 API 필요)');
+      // TODO: 백엔드에서 테스트 데이터 생성 API 호출
+    } catch (e) {
+      print('❌ 테스트 데이터 생성 실패: $e');
+    }
+  }
 
   // 닉네임 수정 시작
   void _startEditingNickname(String currentNickname) {
@@ -139,8 +240,8 @@ class _MyPageScreenState extends State<MyPageScreen> {
 
   // 레벨별 학습 구조 정의
   final Map<int, List<String>> levelStructure = {
-    1: ['ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ'], // 기초 자음 (7개)
-    2: ['ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'], // 고급 자음 (7개)
+    1: ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ'], // 기초 자음 + 된소리 (11개)
+    2: ['ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'], // 고급 자음 (8개)
     3: ['ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ'], // 기본 모음 (10개)
     4: ['ㅐ', 'ㅒ', 'ㅔ', 'ㅖ'], // 이중 모음 (4개)
     5: ['ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ'], // 복합 모음 (7개)
@@ -149,15 +250,15 @@ class _MyPageScreenState extends State<MyPageScreen> {
   String _getLevelDescription(int level) {
     switch (level) {
       case 1:
-        return '기초 자음 (ㄱ~ㅅ)';
+        return '기초 자음 + 된소리 (ㄱ~ㅆ) 11개';
       case 2:
-        return '고급 자음 (ㅇ~ㅎ)';
+        return '고급 자음 (ㅇ~ㅎ) 8개';
       case 3:
-        return '기본 모음 (ㅏ~ㅣ)';
+        return '기본 모음 (ㅏ~ㅣ) 10개';
       case 4:
-        return '이중 모음 (ㅐ,ㅒ,ㅔ,ㅖ)';
+        return '이중 모음 (ㅐ,ㅒ,ㅔ,ㅖ) 4개';
       case 5:
-        return '복합 모음 (ㅘ,ㅙ,ㅚ,ㅝ,ㅞ,ㅟ,ㅢ)';
+        return '복합 모음 (ㅘ,ㅙ,ㅚ,ㅝ,ㅞ,ㅟ,ㅢ) 7개';
       default:
         return '학습 중';
     }
@@ -167,7 +268,7 @@ class _MyPageScreenState extends State<MyPageScreen> {
     if (userProgress == null) return 0.0;
     
     final completedLessons = List<String>.from(userProgress!['completed_lessons'] ?? []);
-    const totalLessons = 35; // 전체 학습 항목 수
+    const totalLessons = 40; // 전체 학습 항목 수 (11+8+10+4+7=40)
     
     return (completedLessons.length / totalLessons * 100).clamp(0.0, 100.0);
   }
@@ -567,20 +668,93 @@ class _MyPageScreenState extends State<MyPageScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 탭 전환 버튼들
           Row(
             children: [
-              const Icon(
-                Icons.school,
-                color: Color(0xFF4299E1),
-                size: 24,
+              // 레벨별 진도 탭
+              Expanded(
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      showQuizStats = false;
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: !showQuizStats ? const Color(0xFF4299E1) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: const Color(0xFF4299E1),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.school,
+                          color: !showQuizStats ? Colors.white : const Color(0xFF4299E1),
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '레벨별 진도',
+                          style: GoogleFonts.notoSans(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: !showQuizStats ? Colors.white : const Color(0xFF4299E1),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(width: 8),
-              Text(
-                '레벨별 진도',
-                style: GoogleFonts.notoSans(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: const Color(0xFF2D3748),
+              // 퀴즈모드 통계 탭
+              Expanded(
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      showQuizStats = true;
+                    });
+                    // 퀴즈 통계 탭 클릭 시 데이터 새로고침
+                    _loadQuizStatistics();
+                    
+                    // 테스트 데이터 생성 (임시)
+                    _generateTestDataIfNeeded();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: showQuizStats ? const Color(0xFF9F7AEA) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: const Color(0xFF9F7AEA),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.quiz,
+                          color: showQuizStats ? Colors.white : const Color(0xFF9F7AEA),
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '퀴즈모드 통계',
+                          style: GoogleFonts.notoSans(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: showQuizStats ? Colors.white : const Color(0xFF9F7AEA),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -588,13 +762,19 @@ class _MyPageScreenState extends State<MyPageScreen> {
           
           const SizedBox(height: 20),
           
-          // 레벨별 진도 표시
-          ...List.generate(5, (index) {
+          // 탭에 따른 내용 표시
+          if (!showQuizStats) ...[
+            // 레벨별 진도 표시
+            ...List.generate(5, (index) {
             final level = index + 1;
             final levelItems = levelStructure[level] ?? [];
             final completedLessons = List<String>.from(userProgress?['completed_lessons'] ?? []);
             final completedInLevel = levelItems.where((item) => completedLessons.contains(item)).length;
             final progressInLevel = levelItems.isEmpty ? 0.0 : (completedInLevel / levelItems.length);
+            
+            // 스킵된 항목 개수 계산 (해당 레벨에서) - 임시로 0으로 설정
+            final Set<String> skippedItems = <String>{}; // 빈 Set으로 초기화
+            final skippedInLevel = levelItems.where((item) => skippedItems.contains(item)).length;
             
             // 복습 횟수 계산 (완료된 레슨 수를 기반으로 추정)
             final reviewCount = _calculateReviewCount(level, completedLessons);
@@ -721,6 +901,7 @@ class _MyPageScreenState extends State<MyPageScreen> {
                     children: [
                       Row(
                         children: [
+                          // 복습 정보
                           Icon(
                             Icons.refresh,
                             size: 16,
@@ -734,6 +915,24 @@ class _MyPageScreenState extends State<MyPageScreen> {
                               color: const Color(0xFF718096),
                             ),
                           ),
+                          
+                          // 스킵 정보 추가
+                          if (skippedInLevel > 0) ...[
+                            const SizedBox(width: 12),
+                            Icon(
+                              Icons.skip_next,
+                              size: 16,
+                              color: Colors.orange,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '스킵 ${skippedInLevel}개',
+                              style: GoogleFonts.notoSans(
+                                fontSize: 12,
+                                color: Colors.orange,
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                       Container(
@@ -769,8 +968,190 @@ class _MyPageScreenState extends State<MyPageScreen> {
               ),
             );
           }),
+          ] else ...[
+            // 퀴즈모드 통계 표시
+            _buildQuizStatsContent(),
+          ],
         ],
       ),
+    );
+  }
+
+  // 퀴즈모드 통계 내용 빌드
+  Widget _buildQuizStatsContent() {
+    if (isLoadingQuizStats) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
+    return Column(
+      children: [
+        // 낱말퀴즈 통계
+        _buildQuizStatCard(
+          '낱말퀴즈',
+          '29개 문제',
+          '자음과 모음 (된소리 포함)',
+          const Color(0xFF6366F1),
+          Icons.text_fields,
+        ),
+        const SizedBox(height: 12),
+        
+        // 초급 퀴즈 통계
+        _buildQuizStatCard(
+          '초급',
+          '10개 문제',
+          '받침 없는 글자 (된소리 포함)',
+          const Color(0xFF10B981),
+          Icons.looks_one,
+        ),
+        const SizedBox(height: 12),
+        
+        // 중급 퀴즈 통계
+        _buildQuizStatCard(
+          '중급',
+          '5개 문제',
+          '받침 있는 글자',
+          const Color(0xFFF59E0B),
+          Icons.looks_two,
+        ),
+        const SizedBox(height: 12),
+        
+        // 고급 퀴즈 통계
+        _buildQuizStatCard(
+          '고급',
+          '5개 문제',
+          '단어 표현',
+          const Color(0xFFE53E3E),
+          Icons.looks_3,
+        ),
+      ],
+    );
+  }
+
+  // 개별 퀴즈 통계 카드 빌드
+  Widget _buildQuizStatCard(String title, String problemCount, String description, Color color, IconData icon) {
+    // 실제 퀴즈 통계 데이터 가져오기
+    final modeStats = quizStatistics?['mode_statistics']?[title];
+    final attempts = modeStats?['attempts'] ?? 0;
+    final sessions = modeStats?['sessions'] ?? [];
+    
+    // 최고 정확도 계산
+    double maxAccuracy = 0.0;
+    int maxScore = 0;
+    if (sessions.isNotEmpty) {
+      for (var session in sessions) {
+        final accuracy = session['accuracy'] ?? 0.0;
+        final score = session['solved_problems'] ?? 0;
+        if (accuracy > maxAccuracy) maxAccuracy = accuracy;
+        if (score > maxScore) maxScore = score;
+      }
+    }
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // 아이콘
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: color, size: 20),
+          ),
+          const SizedBox(width: 12),
+          
+          // 퀴즈 정보
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      title,
+                      style: GoogleFonts.notoSans(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF2D3748),
+                      ),
+                    ),
+                    Text(
+                      problemCount,
+                      style: GoogleFonts.notoSans(
+                        fontSize: 12,
+                        color: const Color(0xFF718096),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  description,
+                  style: GoogleFonts.notoSans(
+                    fontSize: 12,
+                    color: const Color(0xFF718096),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                
+                // 통계 정보 (실제 데이터)
+                Row(
+                  children: [
+                    _buildStatItem('시도', '${attempts}회', color),
+                    const SizedBox(width: 16),
+                    _buildStatItem('최고점', '${maxScore}점', color),
+                    const SizedBox(width: 16),
+                    _buildStatItem('정확도', '${maxAccuracy.toInt()}%', color),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 통계 항목 빌드
+  Widget _buildStatItem(String label, String value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: GoogleFonts.notoSans(
+            fontSize: 10,
+            color: const Color(0xFF9CA3AF),
+          ),
+        ),
+        Text(
+          value,
+          style: GoogleFonts.notoSans(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
     );
   }
 
