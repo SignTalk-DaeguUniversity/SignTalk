@@ -73,92 +73,75 @@ class QuizResultService {
       
       switch (mode) {
         case '낱말퀴즈':
-          level = 1;
-          questionType = 'translation';
+          level = 1;  // 낱말퀴즈는 레벨 1 (가장 기초)
+          questionType = 'character';
           break;
         case '초급':
-          level = 1;
-          questionType = 'recognition';
+          level = 2;
+          questionType = 'syllable';
           break;
         case '중급':
-          level = 2;
-          questionType = 'recognition';
+          level = 3;
+          questionType = 'syllable';
           break;
         case '고급':
-          level = 3;
-          questionType = 'recognition';
+          level = 4;
+          questionType = 'word';
           break;
       }
 
-      // 학습 세션 시작
-      final sessionResponse = await http.post(
-        Uri.parse('$baseUrl/api/learning/ksl/session/start'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'level': level,
-          'lesson_type': questionType,
-        }),
-      );
+      print('📝 퀴즈 결과 저장 시작');
+      print('   - 모드: $mode (레벨 $level)');
+      print('   - 총 문제: $totalProblems');
+      print('   - 정답: $solvedProblems');
+      print('   - 스킵: $skippedProblems');
 
-      if (sessionResponse.statusCode != 201) {
-        print('❌ 학습 세션 시작 실패: ${sessionResponse.statusCode}');
-        return false;
-      }
+      // 세션 ID 생성
+      final sessionId = 'quiz_${DateTime.now().millisecondsSinceEpoch}';
 
-      final sessionData = jsonDecode(sessionResponse.body);
-      final sessionId = sessionData['session']['id'];
-
-      print('✅ 학습 세션 시작: $sessionId');
-
-      // 각 문제에 대한 퀴즈 결과 저장
+      // 각 문제에 대한 퀴즈 결과 저장 (Quiz 테이블에 직접 저장)
+      int successCount = 0;
+      
       for (int i = 0; i < totalProblems; i++) {
         final isCorrect = i < solvedProblems;
-        final userAnswer = isCorrect ? '정답' : (i < solvedProblems + skippedProblems ? null : '오답');
+        final isSkipped = i >= solvedProblems && i < (solvedProblems + skippedProblems);
+        final userAnswer = isSkipped ? 'SKIPPED' : (isCorrect ? '정답' : '오답');
         
-        await http.post(
-          Uri.parse('$baseUrl/api/learning/ksl/quiz'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-          body: jsonEncode({
-            'session_id': sessionId,
-            'level': level,
-            'question_type': questionType,
-            'question': '문제 ${i + 1}',
-            'correct_answer': '정답',
-            'user_answer': userAnswer,
-            'is_correct': isCorrect,
-            'response_time': responseTime / totalProblems, // 평균 응답 시간
-            'confidence_score': isCorrect ? 0.9 : 0.3,
-          }),
-        );
+        try {
+          final response = await http.post(
+            Uri.parse('$baseUrl/api/quiz/ksl/submit'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'session_id': sessionId,
+              'level': level,
+              'question_type': questionType,
+              'question': '문제 ${i + 1}',
+              'correct_answer': '정답',
+              'user_answer': userAnswer,
+              'response_time': responseTime / totalProblems, // 평균 응답 시간
+              'confidence_score': isCorrect ? 0.9 : 0.3,
+            }),
+          );
+
+          if (response.statusCode == 201) {
+            successCount++;
+          } else {
+            print('❌ 문제 ${i + 1} 저장 실패: ${response.statusCode}');
+          }
+        } catch (e) {
+          print('❌ 문제 ${i + 1} 저장 오류: $e');
+        }
       }
 
-      // 학습 세션 종료
-      final endResponse = await http.post(
-        Uri.parse('$baseUrl/api/learning/ksl/session/$sessionId/end'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'duration': responseTime,
-          'total_attempts': totalProblems,
-          'correct_attempts': solvedProblems,
-          'completed': true,
-        }),
-      );
-
-      if (endResponse.statusCode == 200) {
-        print('✅ 퀴즈 결과 저장 완료: $mode - ${accuracy.toStringAsFixed(1)}%');
+      if (successCount == totalProblems) {
+        print('✅ 퀴즈 결과 저장 완료: $mode - ${accuracy.toStringAsFixed(1)}% ($successCount/$totalProblems)');
         return true;
       } else {
-        print('❌ 학습 세션 종료 실패: ${endResponse.statusCode}');
-        return false;
+        print('⚠️ 퀴즈 결과 부분 저장: $successCount/$totalProblems');
+        return successCount > 0; // 일부라도 저장되면 성공으로 처리
       }
 
     } catch (e) {

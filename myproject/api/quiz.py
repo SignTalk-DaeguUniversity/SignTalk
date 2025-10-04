@@ -184,7 +184,7 @@ def get_quiz_statistics(language):
         attempted_quizzes = total_quizzes - skipped_quizzes
         accuracy = (correct_quizzes / attempted_quizzes * 100) if attempted_quizzes > 0 else 0
         
-        # 2. 레벨별 통계 계산 (Python으로 처리)
+        # 2. 레벨별 통계 계산 (세션 단위로)
         level_breakdown = []
         
         # 각 레벨별로 개별 쿼리 실행
@@ -192,8 +192,17 @@ def get_quiz_statistics(language):
         levels = [level_row.level for level_row in levels_query.all()]
         
         for level_num in levels:
-            level_query = Quiz.query.filter_by(user_id=user_id, language=language, level=level_num)
+            # 해당 레벨의 고유 세션 수 계산
+            sessions_query = db.session.query(Quiz.session_id).filter_by(
+                user_id=user_id, 
+                language=language, 
+                level=level_num
+            ).distinct()
+            unique_sessions = [s.session_id for s in sessions_query.all()]
+            session_count = len(unique_sessions)
             
+            # 전체 문제 통계
+            level_query = Quiz.query.filter_by(user_id=user_id, language=language, level=level_num)
             level_total = level_query.count()
             level_correct = level_query.filter(Quiz.is_correct == True).count()
             level_skipped = level_query.filter(Quiz.user_answer == 'SKIPPED').count()
@@ -203,6 +212,7 @@ def get_quiz_statistics(language):
             
             level_breakdown.append({
                 'level': level_num,
+                'session_count': session_count,  # 세션 횟수 추가
                 'total_questions': level_total,
                 'correct_answers': level_correct,
                 'skipped_questions': level_skipped,
@@ -235,9 +245,9 @@ def get_quiz_levels(language):
         # QUIZ_PROBLEMS를 기반으로 레벨 정보 생성
         levels = []
         level_mapping = {
-            1: ('초급', 'beginner', 60),
-            2: ('중급', 'intermediate', 80), 
-            3: ('낱말퀴즈', 'advanced', 52),
+            1: ('낱말퀴즈', 'beginner', 52),
+            2: ('초급', 'intermediate', 60),
+            3: ('중급', 'advanced', 80), 
             4: ('고급', 'expert', 0)
         }
         

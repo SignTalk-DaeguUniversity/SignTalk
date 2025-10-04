@@ -80,42 +80,73 @@ class _MyPageScreenState extends State<MyPageScreen> {
 
       print('📊 백엔드에서 퀴즈 통계 로드 중...');
       
-      // 백엔드 성취도 API 호출
-      final result = await QuizService.getAchievements('ksl');
+      // 백엔드 퀴즈 통계 API 호출
+      final result = await QuizService.getQuizStatistics('ksl');
 
       if (result['success']) {
-        final achievements = result['achievements'] ?? [];
+        final statistics = result['statistics'] ?? {};
+        final levelBreakdown = result['level_breakdown'] ?? [];
         
-        // 기본 퀴즈 통계 설정
-        final defaultStats = {
-          'total_sessions': 0,
-          'average_accuracy': 0.0,
-          'total_achievements': achievements.length,
-          'mode_statistics': {
-            '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
-          },
+        print('✅ 퀴즈 통계 로드 성공');
+        print('   - 총 퀴즈: ${statistics['total_quizzes']}');
+        print('   - 정답: ${statistics['correct_quizzes']}');
+        print('   - 정확도: ${statistics['accuracy']}%');
+        
+        // 레벨별 통계를 모드별로 변환
+        final modeStats = {
+          '낱말퀴즈': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+          '초급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+          '중급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+          '고급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
         };
         
+        // 레벨 매핑 (백엔드 레벨 -> 모드명)
+        final levelToMode = {
+          1: '낱말퀴즈',
+          2: '초급',
+          3: '중급',
+          4: '고급',
+        };
+        
+        for (var levelData in levelBreakdown) {
+          final level = levelData['level'];
+          final mode = levelToMode[level];
+          
+          if (mode != null) {
+            modeStats[mode] = {
+              'attempts': levelData['session_count'] ?? 0,  // 세션 횟수로 변경
+              'correct': levelData['correct_answers'] ?? 0,
+              'total_questions': levelData['total_questions'] ?? 0,
+              'accuracy': levelData['accuracy'] ?? 0.0,
+              'has_data': (levelData['session_count'] ?? 0) > 0,
+            };
+            
+            print('   - $mode: 시도 ${levelData['session_count']}회, 정답 ${levelData['correct_answers']}/${levelData['total_questions']} (${levelData['accuracy']}%)');
+          }
+        }
+        
         setState(() {
-          quizStatistics = defaultStats;
+          quizStatistics = {
+            'total_sessions': statistics['total_quizzes'] ?? 0,
+            'total_quizzes': statistics['total_quizzes'] ?? 0,
+            'correct_quizzes': statistics['correct_quizzes'] ?? 0,
+            'average_accuracy': statistics['accuracy'] ?? 0.0,
+            'mode_statistics': modeStats,
+          };
         });
         
-        print('✅ 퀴즈 통계 로드 완료: ${achievements.length}개 성취도');
       } else {
-        print('❌ 퀴즈 통계 API 호출 실패: ${result['message']}');
+        print('❌ 퀴즈 통계 API 호출 실패: ${result['error']}');
         
         // 실패 시 빈 데이터 설정
         setState(() {
           quizStatistics = {
             'total_sessions': 0,
             'mode_statistics': {
-              '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
-              '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
-              '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
-              '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
+              '낱말퀴즈': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+              '초급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+              '중급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+              '고급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
             }
           };
         });
@@ -129,10 +160,10 @@ class _MyPageScreenState extends State<MyPageScreen> {
         quizStatistics = {
           'total_sessions': 0,
           'mode_statistics': {
-            '낱말퀴즈': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '초급': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '중급': {'attempts': 0, 'sessions': [], 'has_data': false},
-            '고급': {'attempts': 0, 'sessions': [], 'has_data': false},
+            '낱말퀴즈': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+            '초급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+            '중급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
+            '고급': {'attempts': 0, 'correct': 0, 'total_questions': 0, 'accuracy': 0.0, 'has_data': false},
           }
         };
       });
@@ -1037,19 +1068,14 @@ class _MyPageScreenState extends State<MyPageScreen> {
     // 실제 퀴즈 통계 데이터 가져오기
     final modeStats = quizStatistics?['mode_statistics']?[title];
     final attempts = modeStats?['attempts'] ?? 0;
-    final sessions = modeStats?['sessions'] ?? [];
+    final correct = modeStats?['correct'] ?? 0;
+    final accuracy = modeStats?['accuracy'] ?? 0.0;
+    final hasData = modeStats?['has_data'] ?? false;
     
-    // 최고 정확도 계산
-    double maxAccuracy = 0.0;
-    int maxScore = 0;
-    if (sessions.isNotEmpty) {
-      for (var session in sessions) {
-        final accuracy = session['accuracy'] ?? 0.0;
-        final score = session['solved_problems'] ?? 0;
-        if (accuracy > maxAccuracy) maxAccuracy = accuracy;
-        if (score > maxScore) maxScore = score;
-      }
-    }
+    // 데이터가 있는지 확인
+    final displayAttempts = hasData ? attempts : 0;
+    final displayCorrect = hasData ? correct : 0;
+    final displayAccuracy = hasData ? accuracy : 0.0;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1116,11 +1142,11 @@ class _MyPageScreenState extends State<MyPageScreen> {
                 // 통계 정보 (실제 데이터)
                 Row(
                   children: [
-                    _buildStatItem('시도', '${attempts}회', color),
+                    _buildStatItem('시도', '${displayAttempts}회', color),
                     const SizedBox(width: 16),
-                    _buildStatItem('최고점', '${maxScore}점', color),
+                    _buildStatItem('정답', '${displayCorrect}개', color),
                     const SizedBox(width: 16),
-                    _buildStatItem('정확도', '${maxAccuracy.toInt()}%', color),
+                    _buildStatItem('정확도', '${displayAccuracy.toStringAsFixed(1)}%', color),
                   ],
                 ),
               ],
