@@ -365,4 +365,5 @@ def speak(lang_code):
         return jsonify({'success': False, 'error': str(e)})
 
 if __name__ == '__main__':
+    # 실제 기기에서 접근 가능하도록 0.0.0.0으로 바인딩
     app.run(debug=True, host='0.0.0.0', port=5002)

@@ -7,6 +7,8 @@ from auth.models import db, Quiz, LearningSession, Progress
 from datetime import datetime
 from sqlalchemy import func, case, desc
 
+quiz_bp = Blueprint('quiz', __name__)
+
 # 퀴즈 모드별 문제 구성
 QUIZ_PROBLEMS = {
     '낱말퀴즈': {
@@ -41,6 +43,19 @@ QUIZ_PROBLEMS = {
         'finals': ['', 'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']  # 빈 문자열 포함
     }
 }
+
+def combine_korean_chars(consonant, vowel, final=''):
+    """자음, 모음, 받침을 조합해서 한글 완성형 생성"""
+    consonant_index = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(consonant)
+    vowel_index = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'].index(vowel)
+    
+    if final:
+        final_index = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(final)
+    else:
+        final_index = 0
+    
+    unicode_value = 0xAC00 + (consonant_index * 21 * 28) + (vowel_index * 28) + final_index
+    return chr(unicode_value)
 
 def generate_quiz_problems(mode, count=None):
     """퀴즈 문제 동적 생성"""
@@ -102,20 +117,7 @@ def generate_quiz_problems(mode, count=None):
     
     return problems
 
-def combine_korean_chars(consonant, vowel, final=''):
-    """자음, 모음, 받침을 조합해서 한글 완성형 생성"""
-    consonant_index = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(consonant)
-    vowel_index = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'].index(vowel)
-    
-    if final:
-        final_index = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(final)
-    else:
-        final_index = 0
-    
-    unicode_value = 0xAC00 + (consonant_index * 21 * 28) + (vowel_index * 28) + final_index
-    return chr(unicode_value)
-
-quiz_bp = Blueprint('quiz', __name__)
+# API 엔드포인트들
 
 @quiz_bp.route('/api/quiz/<language>/skip', methods=['POST'])
 @jwt_required()
@@ -182,7 +184,7 @@ def get_quiz_statistics(language):
         attempted_quizzes = total_quizzes - skipped_quizzes
         accuracy = (correct_quizzes / attempted_quizzes * 100) if attempted_quizzes > 0 else 0
         
-        # 2. 레벨별 통계 계산 (Python으로 처리
+        # 2. 레벨별 통계 계산 (Python으로 처리)
         level_breakdown = []
         
         # 각 레벨별로 개별 쿼리 실행
@@ -221,7 +223,6 @@ def get_quiz_statistics(language):
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 @quiz_bp.route('/api/quiz/<language>/levels', methods=['GET'])
 @jwt_required()
@@ -348,6 +349,113 @@ def generate_quiz_questions(language):
             'total_questions': len(questions),
             'questions': questions,
             'level_config': level_config
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# 추가된 API들
+
+@quiz_bp.route('/api/quiz/<language>/submit', methods=['POST'])
+@jwt_required()
+def submit_quiz_answer(language):
+    """퀴즈 답안 제출 및 저장"""
+    try:
+        if language != 'ksl':
+            return jsonify({'error': 'Only KSL is supported'}), 400
+        
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        required_fields = ['session_id', 'level', 'question_type', 'question', 'correct_answer', 'user_answer']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'error': f'{field} is required'}), 400
+        
+        is_correct = data['user_answer'].strip().lower() == data['correct_answer'].strip().lower()
+        
+        quiz = Quiz(
+            user_id=user_id,
+            session_id=data['session_id'],
+            language=language,
+            level=data['level'],
+            question_type=data['question_type'],
+            question=data['question'],
+            correct_answer=data['correct_answer'],
+            user_answer=data['user_answer'],
+            is_correct=is_correct,
+            response_time=data.get('response_time', 0),
+            confidence_score=data.get('confidence_score', 0.0)
+        )
+        
+        db.session.add(quiz)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Answer submitted successfully',
+            'is_correct': is_correct,
+            'quiz': quiz.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@quiz_bp.route('/api/quiz/<language>/skipped', methods=['GET'])
+@jwt_required()
+def get_skipped_questions(language):
+    """스킵된 문제 조회"""
+    try:
+        if language != 'ksl':
+            return jsonify({'error': 'Only KSL is supported'}), 400
+        
+        user_id = get_jwt_identity()
+        
+        skipped_quizzes = Quiz.query.filter(
+            Quiz.user_id == user_id,
+            Quiz.language == language,
+            Quiz.user_answer == 'SKIPPED'
+        ).order_by(Quiz.created_at.desc()).all()
+        
+        # 모드별 그룹화
+        grouped_skipped = {}
+        for quiz in skipped_quizzes:
+            mode = quiz.question_type
+            if mode not in grouped_skipped:
+                grouped_skipped[mode] = []
+            grouped_skipped[mode].append(quiz.to_dict())
+        
+        return jsonify({
+            'skipped_questions': [quiz.to_dict() for quiz in skipped_quizzes],
+            'grouped_by_mode': grouped_skipped,
+            'total_skipped': len(skipped_quizzes)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@quiz_bp.route('/api/quiz/<language>/mode/<mode>/generate', methods=['POST'])
+@jwt_required()
+def generate_quiz_by_mode(language, mode):
+    """모드별 퀴즈 문제 생성 (기존 generate_quiz_problems 함수 활용)"""
+    try:
+        if language != 'ksl':
+            return jsonify({'error': 'Only KSL is supported'}), 400
+        
+        if mode not in QUIZ_PROBLEMS:
+            return jsonify({'error': 'Invalid quiz mode'}), 400
+        
+        user_id = get_jwt_identity()
+        data = request.get_json() or {}
+        count = data.get('count')
+        
+        problems = generate_quiz_problems(mode, count)
+        
+        return jsonify({
+            'mode': mode,
+            'description': QUIZ_PROBLEMS[mode]['description'],
+            'total_problems': len(problems),
+            'problems': problems
         }), 200
         
     except Exception as e:

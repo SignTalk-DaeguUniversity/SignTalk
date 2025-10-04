@@ -98,6 +98,7 @@ def save_recognition():
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
 @progress_bp.route('/api/progress/<language>/reset', methods=['POST'])
 @jwt_required()
 def reset_progress(language):

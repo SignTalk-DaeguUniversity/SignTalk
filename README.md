@@ -29,6 +29,12 @@ flutter pub outdated
 ## chrome
  flutter run -d chrome
 
+## 안드로이드 에뮬레이터
+flutter emulators --launch Pixel_7 
+flutter run
  # 데이터 베이스 테이블 생성
  cd /Users/kwoncheeun/Desktop/SignTalk/myproject
 python create_tables.py
+
+# 리로드 하는법
+다 로드되었을때 터미널에 r
