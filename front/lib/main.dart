@@ -561,7 +561,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     // 초기화 후 잠시 대기 후 진도 불러오기
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadUserProgress();
-      _initializeCamera();
+      // 카메라 초기화는 카메라를 켤 때만 수행 (지연 로딩)
     });
   }
 
@@ -570,13 +570,22 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     _timer?.cancel();
     _recognitionTimer?.cancel();
     _correctAnswerTimer?.cancel();
+    // 카메라는 앱 종료 시에만 dispose (재사용을 위해)
     _cameraController?.dispose();
     super.dispose();
   }
 
-  // 카메라 초기화 및 플랫폼 감지
+  // 카메라 초기화 및 플랫폼 감지 (지연 로딩)
   Future<void> _initializeCamera() async {
+    // 이미 초기화되어 있으면 스킵 (캐싱)
+    if (_isCameraInitialized && _cameraController != null) {
+      print('✅ 카메라 이미 초기화됨 (캐시 사용)');
+      return;
+    }
+
     try {
+      print('🔄 카메라 초기화 시작...');
+      
       // 플랫폼 감지: 실제 기기인지 에뮬레이터인지 확인
       useDeviceCamera = await _isRealDevice();
 
@@ -610,7 +619,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     }
   }
 
-  // 디바이스 카메라 초기화
+  // 디바이스 카메라 초기화 (최적화)
   Future<void> _initializeDeviceCamera() async {
     try {
       // 카메라 권한 요청
@@ -620,11 +629,13 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         return;
       }
 
-      // 사용 가능한 카메라 목록 가져오기
-      _cameras = await availableCameras();
+      // 사용 가능한 카메라 목록 가져오기 (캐싱)
       if (_cameras == null || _cameras!.isEmpty) {
-        print('❌ 사용 가능한 카메라가 없습니다');
-        return;
+        _cameras = await availableCameras();
+        if (_cameras == null || _cameras!.isEmpty) {
+          print('❌ 사용 가능한 카메라가 없습니다');
+          return;
+        }
       }
 
       // 전면 카메라 우선 선택 (수어 인식용)
@@ -636,23 +647,33 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         }
       }
 
-      // 카메라 컨트롤러 초기화
+      // 카메라 컨트롤러 초기화 (저해상도 + 빠른 포맷)
       _cameraController = CameraController(
         selectedCamera,
-        ResolutionPreset.medium, // 성능을 위해 중간 해상도 사용
+        ResolutionPreset.low, // 성능 향상: 저해상도 (수어 인식에 충분)
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420, // 빠른 처리
       );
 
+      // 초기화 시작
+      final initStartTime = DateTime.now();
       await _cameraController!.initialize();
+      final initDuration = DateTime.now().difference(initStartTime);
 
-      setState(() {
-        _isCameraInitialized = true;
-      });
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = true;
+        });
+      }
 
-      print('✅ 디바이스 카메라 초기화 완료');
+      print('✅ 디바이스 카메라 초기화 완료 (${initDuration.inMilliseconds}ms, 저해상도 모드)');
     } catch (e) {
       print('❌ 디바이스 카메라 초기화 실패: $e');
-      _isCameraInitialized = false;
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = false;
+        });
+      }
     }
   }
 
@@ -1984,23 +2005,34 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     );
   }
 
-  void _toggleCamera() {
-    setState(() {
-      isCameraOn = !isCameraOn;
-      if (isCameraOn) {
-        if (useDeviceCamera) {
-          // 디바이스 카메라 사용 시
-          _startDeviceCameraRecognition();
-        } else {
-          // 서버 스트림 사용 시
-          _findWorkingStreamUrl();
-          _startRecognitionPolling();
-        }
-      } else {
-        _stopRecognitionPolling();
-        workingStreamUrl = '';
+  Future<void> _toggleCamera() async {
+    if (!isCameraOn) {
+      // 카메라를 켤 때
+      setState(() {
+        isCameraOn = true;
+      });
+      
+      // 카메라가 초기화되지 않았으면 초기화 (지연 로딩)
+      if (!_isCameraInitialized && _cameraController == null) {
+        await _initializeCamera();
       }
-    });
+      
+      if (useDeviceCamera) {
+        // 디바이스 카메라 사용 시
+        _startDeviceCameraRecognition();
+      } else {
+        // 서버 스트림 사용 시
+        _findWorkingStreamUrl();
+        _startRecognitionPolling();
+      }
+    } else {
+      // 카메라를 끄 때 (카메라는 dispose하지 않고 재사용)
+      setState(() {
+        isCameraOn = false;
+      });
+      _stopRecognitionPolling();
+      workingStreamUrl = '';
+    }
   }
 
   // 디바이스 카메라 인식 시작
@@ -2102,8 +2134,16 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     }
   }
 
-  // 작동하는 스트림 URL 찾기 (USB 디버깅 우선)
+  // 작동하는 스트림 URL 찾기 (캐싱 최적화)
   Future<void> _findWorkingStreamUrl() async {
+    // 이미 작동하는 URL이 있으면 재사용 (캐싱)
+    if (workingStreamUrl.isNotEmpty) {
+      print('✅ 캐시된 스트림 URL 사용: $workingStreamUrl');
+      return;
+    }
+
+    print('🔄 서버 스트림 URL 검색 중...');
+    
     List<String> serverUrls = [
       'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
       'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
@@ -2116,7 +2156,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         final testUrl = '$baseUrl/video_feed_$currentLanguage';
         final response = await http
             .head(Uri.parse(testUrl))
-            .timeout(const Duration(seconds: 3));
+            .timeout(const Duration(seconds: 2)); // 타임아웃 단축
 
         if (response.statusCode == 200) {
           setState(() {
@@ -2126,7 +2166,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           return;
         }
       } catch (e) {
-        print('❌ $baseUrl 연결 실패: $e');
+        // 에러 로그 최소화
         continue;
       }
     }
