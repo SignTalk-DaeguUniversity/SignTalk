@@ -233,44 +233,37 @@ def get_quiz_levels(language):
             return jsonify({'error': 'Only KSL is supported'}), 400
         
         # QUIZ_PROBLEMS를 기반으로 레벨 정보 생성
-        levels = [
-            {
-                'level': 1,
-                'name': '초급',
-                'description': QUIZ_PROBLEMS['초급']['description'],
-                'difficulty': 'beginner',
-                'total_questions': QUIZ_PROBLEMS['초급']['total_problems'],
-                'characters': QUIZ_PROBLEMS['초급']['consonants'][:5],  # 처음 5개 자음
-                'required_accuracy': 60
-            },
-            {
-                'level': 2,
-                'name': '중급',
-                'description': QUIZ_PROBLEMS['중급']['description'],
-                'difficulty': 'intermediate',
-                'total_questions': QUIZ_PROBLEMS['중급']['total_problems'],
-                'characters': QUIZ_PROBLEMS['중급']['consonants'][5:14] + QUIZ_PROBLEMS['중급']['vowels'][:1],  # 나머지 자음 + 모음 1개
-                'required_accuracy': 80
-            },
-            {
-                'level': 3,
-                'name': '난말퀴즈',
-                'description': QUIZ_PROBLEMS['낱말퀴즈']['description'],
-                'difficulty': 'advanced',
-                'total_questions': QUIZ_PROBLEMS['낱말퀴즈']['total_problems'],
-                'characters': QUIZ_PROBLEMS['낱말퀴즈']['characters'],  # 전체 자모
-                'required_accuracy': 52
-            },
-            {
-                'level': 4,
-                'name': '고급',
-                'description': QUIZ_PROBLEMS['고급']['description'],
-                'difficulty': 'expert',
-                'total_questions': QUIZ_PROBLEMS['고급']['total_problems'],
-                'characters': ['단어', '문장'],  # 고급은 단어/문장 표현
-                'required_accuracy': 0
-            }
-        ]
+        levels = []
+        level_mapping = {
+            1: ('초급', 'beginner', 60),
+            2: ('중급', 'intermediate', 80), 
+            3: ('낱말퀴즈', 'advanced', 52),
+            4: ('고급', 'expert', 0)
+        }
+        
+        for level_num, (mode_name, difficulty, accuracy) in level_mapping.items():
+            if mode_name in QUIZ_PROBLEMS:
+                config = QUIZ_PROBLEMS[mode_name]
+                
+                # 캐릭터 설정
+                if mode_name == '초급':
+                    characters = config['consonants'][:5]
+                elif mode_name == '중급':
+                    characters = config['consonants'][5:14] + config['vowels'][:1]
+                elif mode_name == '낱말퀴즈':
+                    characters = config['characters']
+                else:  # 고급
+                    characters = ['단어', '문장']
+                
+                levels.append({
+                    'level': level_num,
+                    'name': mode_name,
+                    'description': config['description'],
+                    'difficulty': difficulty,
+                    'total_questions': config['total_problems'],
+                    'characters': characters,
+                    'required_accuracy': accuracy
+                })
         
         return jsonify({
             'language': language,

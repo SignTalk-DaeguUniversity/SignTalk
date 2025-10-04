@@ -29,18 +29,7 @@ LEARNING_SEQUENCE = [
     'ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ'
 ]
 
-def combine_korean_chars(consonant, vowel, final=''):
-    """자음, 모음, 받침을 조합해서 한글 완성형 생성"""
-    consonant_index = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(consonant)
-    vowel_index = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'].index(vowel)
-    
-    if final:
-        final_index = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].index(final)
-    else:
-        final_index = 0
-    
-    unicode_value = 0xAC00 + (consonant_index * 21 * 28) + (vowel_index * 28) + final_index
-    return chr(unicode_value)
+
 
 
 learning_bp = Blueprint('learning', __name__)
@@ -288,46 +277,4 @@ def check_and_award_achievements(user_id, language, session):
         print(f"Achievement error: {e}")
 
             
-@learning_bp.route('/api/learning/<language>/quiz/skip', methods=['POST'])
-@jwt_required()
-def skip_quiz(language):
-    """Quiz skip handling"""
-    try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        if language not in ['asl', 'ksl']:
-            return jsonify({'error': 'Invalid language'}), 400
-        
-        # Required field validation
-        required_fields = ['session_id', 'level', 'question_type', 'question']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'error': f'{field} is required'}), 400
-        
-        # Save skipped quiz record
-        quiz = Quiz(
-            user_id=user_id,
-            session_id=data['session_id'],
-            language=language,
-            level=data['level'],
-            question_type=data['question_type'],
-            question=data['question'],
-            correct_answer=data.get('correct_answer', ''),
-            user_answer='SKIPPED',
-            is_correct=False,
-            response_time=data.get('response_time', 0),
-            confidence_score=0.0
-        )
-        
-        db.session.add(quiz)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Question skipped successfully',
-            'quiz': quiz.to_dict()
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+
