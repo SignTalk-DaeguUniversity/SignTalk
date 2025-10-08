@@ -206,4 +206,10 @@ class AuthService {
     final token = await getToken();
     return token != null;
   }
+
+  // 강제 로그아웃 (디버깅용)
+  Future<void> forceLogout() async {
+    await _removeToken();
+    print('🚪 강제 로그아웃 완료');
+  }
 }

@@ -6,9 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ProgressService {
   // 다중 서버 주소 시도 시스템
   static const List<String> _baseUrls = [
-    'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
+    'http://10.0.2.2:5002',      // 에뮬레이터용 (우선순위)
     'http://127.0.0.1:5002',     // USB 디버깅 (ADB 포트 포워딩)
-    'http://10.0.2.2:5002',      // 에뮬레이터용
+    'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
     'http://localhost:5002',     // USB 디버깅 대안
   ];
 
@@ -92,14 +92,11 @@ class ProgressService {
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
-        print('✅ 진도 조회 성공: ${data['progress']}');
         return {'success': true, 'progress': data['progress']};
       } else {
-        print('❌ 진도 조회 실패: ${data['error']}');
         return {'success': false, 'message': data['error'] ?? '진도 조회에 실패했습니다.'};
       }
     } catch (e) {
-      print('❌ 진도 조회 예외 발생: $e');
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }
@@ -125,17 +122,14 @@ class ProgressService {
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
-        print('✅ 진도 업데이트 성공');
         return {'success': true, 'message': data['message']};
       } else {
-        print('❌ 진도 업데이트 실패: ${data['error']}');
         return {
           'success': false,
           'message': data['error'] ?? '진도 업데이트에 실패했습니다.',
         };
       }
     } catch (e) {
-      print('❌ 진도 업데이트 예외 발생: $e');
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }
@@ -180,7 +174,6 @@ class ProgressService {
         };
       }
     } catch (e) {
-      print('❌ 인식 결과 저장 예외 발생: $e');
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }
@@ -202,17 +195,14 @@ class ProgressService {
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
-        print('✅ 진도 초기화 성공');
         return {'success': true, 'message': data['message'] ?? '진도가 초기화되었습니다.'};
       } else {
-        print('❌ 진도 초기화 실패: ${data['error']}');
         return {
           'success': false,
           'message': data['error'] ?? '진도 초기화에 실패했습니다.',
         };
       }
     } catch (e) {
-      print('❌ 진도 초기화 예외 발생: $e');
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }

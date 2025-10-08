@@ -6,9 +6,9 @@ import 'auth_service.dart';
 class LearningSessionService {
   // 다중 서버 주소 시도 시스템
   static const List<String> _baseUrls = [
-    'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
+    'http://10.0.2.2:5002',      // 에뮬레이터용 (우선순위)
     'http://127.0.0.1:5002',     // USB 디버깅 (ADB 포트 포워딩)
-    'http://10.0.2.2:5002',      // 에뮬레이터용
+    'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
     'http://localhost:5002',     // USB 디버깅 대안
   ];
 

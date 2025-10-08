@@ -22,11 +22,18 @@ class AuthProvider with ChangeNotifier {
 
     try {
       final isLoggedIn = await _authService.isLoggedIn();
+      
       if (isLoggedIn) {
         final result = await _authService.getProfile();
+        
         if (result['success']) {
           _user = result['user'];
           _isLoggedIn = true;
+        } else {
+          // 프로필 조회 실패 시 토큰 삭제
+          await _authService.forceLogout();
+          _isLoggedIn = false;
+          _user = null;
         }
       }
     } catch (e) {

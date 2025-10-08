@@ -23,7 +23,7 @@ class AuthSelectionScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Spacer(flex: 2),
-              
+
               // SignTalk 로고
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -53,9 +53,9 @@ class AuthSelectionScreen extends StatelessWidget {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 24),
-              
+
               // 설명 텍스트
               Text(
                 '수어 학습을 시작하려면\n로그인이 필요합니다',
@@ -67,9 +67,9 @@ class AuthSelectionScreen extends StatelessWidget {
                 ),
                 textAlign: TextAlign.center,
               ),
-              
+
               const Spacer(flex: 2),
-              
+
               // 로그인 버튼
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 40),
@@ -104,9 +104,9 @@ class AuthSelectionScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              
+
               const SizedBox(height: 16),
-              
+
               // 회원가입 버튼
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 40),
@@ -118,7 +118,8 @@ class AuthSelectionScreen extends StatelessWidget {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => const AuthScreen(isLogin: false),
+                          builder: (context) =>
+                              const AuthScreen(isLogin: false),
                         ),
                       );
                     },
@@ -140,31 +141,8 @@ class AuthSelectionScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              
+
               const Spacer(flex: 1),
-              
-              // 게스트로 계속하기 (선택사항)
-              TextButton(
-                onPressed: () {
-                  // 게스트 모드는 나중에 구현 가능
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('로그인이 필요한 기능입니다'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                },
-                child: Text(
-                  '게스트로 둘러보기',
-                  style: GoogleFonts.notoSans(
-                    fontSize: 14,
-                    color: Colors.white.withOpacity(0.7),
-                    decoration: TextDecoration.underline,
-                  ),
-                ),
-              ),
-              
-              const SizedBox(height: 24),
             ],
           ),
         ),

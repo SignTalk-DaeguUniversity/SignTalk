@@ -2,11 +2,14 @@ import pandas as pd
 import numpy as np
 import os
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.callbacks import EarlyStopping
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 X, y = [], []
 
@@ -80,9 +83,11 @@ np.save(os.path.join(output_model_dir, "ksl_norm_mean.npy"), feature_mean.astype
 np.save(os.path.join(output_model_dir, "ksl_norm_std.npy"), feature_std.astype(np.float32))
 print("Saved normalization stats to model/ (ksl_norm_mean.npy, ksl_norm_std.npy)")
 
-# === Model: lightweight for Raspberry Pi 3 ===
+# === Model: Enhanced architecture for better accuracy ===
 model = Sequential([
-    Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
+    Dropout(0.3),
+    Dense(64, activation='relu'),
     Dropout(0.2),
     Dense(32, activation='relu'),
     Dropout(0.2),
@@ -110,3 +115,88 @@ np.save(os.path.join(output_model_dir, "ksl_labels.npy"), labels_original_order)
 
 print(f"\n모델과 라벨이 '{output_model_dir}' 디렉토리에 저장되었습니다.")
 print("ksl_labels.npy 라벨 목록:", labels_original_order)
+
+# === 성능 분석 ===
+if X_val is not None and y_val_cat is not None:
+    print("\n=== 성능 분석 시작 ===")
+    
+    # Validation set 예측
+    y_val_pred = model.predict(X_val, verbose=0)
+    y_val_pred_classes = np.argmax(y_val_pred, axis=1)
+    y_val_true_classes = np.argmax(y_val_cat, axis=1)
+    
+    # 1. Classification Report
+    print("\n[Classification Report]")
+    report = classification_report(
+        y_val_true_classes, 
+        y_val_pred_classes, 
+        target_names=labels_original_order,
+        digits=4
+    )
+    print(report)
+    
+    # Save report to file
+    report_path = os.path.join(output_model_dir, "classification_report.txt")
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(report)
+    print(f"Classification report saved to: {report_path}")
+    
+    # 2. Confusion Matrix
+    print("\n[Confusion Matrix]")
+    cm = confusion_matrix(y_val_true_classes, y_val_pred_classes)
+    
+    # Plot confusion matrix
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(
+        cm, 
+        annot=True, 
+        fmt='d', 
+        cmap='Blues',
+        xticklabels=labels_original_order,
+        yticklabels=labels_original_order,
+        cbar_kws={'label': 'Count'}
+    )
+    plt.title('Confusion Matrix - KSL Model', fontsize=16, pad=20)
+    plt.ylabel('True Label', fontsize=12)
+    plt.xlabel('Predicted Label', fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    
+    cm_path = os.path.join(output_model_dir, "confusion_matrix.png")
+    plt.savefig(cm_path, dpi=150, bbox_inches='tight')
+    print(f"Confusion matrix saved to: {cm_path}")
+    plt.close()
+    
+    # 3. Find most confused pairs
+    print("\n[Most Confused Label Pairs (Top 10)]")
+    confused_pairs = []
+    for i in range(len(labels_original_order)):
+        for j in range(len(labels_original_order)):
+            if i != j and cm[i, j] > 0:
+                confused_pairs.append((
+                    labels_original_order[i],
+                    labels_original_order[j],
+                    cm[i, j]
+                ))
+    
+    confused_pairs.sort(key=lambda x: x[2], reverse=True)
+    for true_label, pred_label, count in confused_pairs[:10]:
+        print(f"  {true_label} → {pred_label}: {count} times")
+    
+    # 4. Per-class accuracy
+    print("\n[Per-Class Accuracy]")
+    class_correct = np.diag(cm)
+    class_total = np.sum(cm, axis=1)
+    class_accuracy = class_correct / (class_total + 1e-8)
+    
+    acc_data = list(zip(labels_original_order, class_accuracy, class_total))
+    acc_data.sort(key=lambda x: x[1])  # Sort by accuracy
+    
+    print("Lowest accuracy labels:")
+    for label, acc, total in acc_data[:5]:
+        print(f"  {label}: {acc*100:.2f}% ({int(class_correct[list(labels_original_order).index(label)])}/{int(total)} correct)")
+    
+    print("\n성능 분석 완료!")
+else:
+    print("\nValidation set이 없어 성능 분석을 건너뜁니다.")

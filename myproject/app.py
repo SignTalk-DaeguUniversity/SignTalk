@@ -15,6 +15,8 @@ from api.progress import progress_bp
 from api.learning import learning_bp
 from api.recognition import recognition_bp
 from api.quiz import quiz_bp
+from api.jamo_decompose import jamo_decompose_bp
+from api.jamo_compose import jamo_compose_bp
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -42,6 +44,8 @@ app.register_blueprint(progress_bp)
 app.register_blueprint(learning_bp)
 app.register_blueprint(recognition_bp)
 app.register_blueprint(quiz_bp)
+app.register_blueprint(jamo_decompose_bp)
+app.register_blueprint(jamo_compose_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
@@ -91,27 +95,32 @@ DOUBLE_CONSONANT_MAP = {
 
 # ==== 공통 영상 스트리밍 (H5 모델용) ====
 def generate_frames(model, labels, lang_key, camera_device=0):
-    # 카메라 열기
+    # 카메라 열기 (macOS 호환성 개선)
+    print(f"📷 카메라 {camera_device}번 열기 시도...")
     cap = cv2.VideoCapture(camera_device)
-    print(f"📷 카메라 {camera_device}번 사용 시작")
     
-    # 고성능 설정
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # 해상도 증가 (인식 정확도 향상)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)  # FPS 증가 (부드러운 영상)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-    
-    # 버퍼 크기 최소화 (지연 감소)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    
-    print(f"📷 카메라 설정: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {cap.get(cv2.CAP_PROP_FPS)}fps")
-
     if not cap.isOpened():
         print("❌ 카메라 열기 실패")
+        print("   - 다른 앱이 카메라를 사용 중인지 확인하세요")
+        print("   - 시스템 설정 > 개인정보 보호 > 카메라 권한을 확인하세요")
         return
+    
+    print(f"✅ 카메라 {camera_device}번 열기 성공")
+    
+    # 기본 설정만 적용 (macOS 호환성)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+    
+    print(f"📷 카메라 설정 완료: {actual_width}x{actual_height} @ {actual_fps}fps")
 
     last_prediction_time = 0
-    prediction_interval = 0.3  # 0.3초마다 인식 (더 빠르게)
+    prediction_interval = 0.4  # 0.4초마다 인식 (안정성 우선)
     prev_idx = -1
     consecutive_same = 0  # 연속 같은 결과 카운트
     last_predicted_char = ""
@@ -148,7 +157,9 @@ def generate_frames(model, labels, lang_key, camera_device=0):
                         idx = np.argmax(prediction)
                         confidence = float(np.max(prediction))
 
-                        if 0 <= idx < len(labels) and confidence > 0.4:  # 신뢰도 임계값 상향
+                        # 신뢰도 임계값 (쌍자음 인식 개선)
+                        min_confidence = 0.4  # 적당한 신뢰도로 조정
+                        if 0 <= idx < len(labels) and confidence > min_confidence:
                             predicted_char = labels[idx]
                             
                             # 연속 같은 결과 확인 (안정성 향상)
@@ -158,29 +169,38 @@ def generate_frames(model, labels, lang_key, camera_device=0):
                                 consecutive_same = 1
                                 last_predicted_char = predicted_char
                             
-                            # 2번 연속 같은 결과일 때만 업데이트
+                            # 2번 연속 같은 결과일 때 업데이트 (쌍자음 인식 최적화)
                             if consecutive_same >= 2:
                                 current_time_sec = time.time()
                                 time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
                                 
-                                # 쌍자음 처리 로직
-                                # 1. 같은 자음이 이미 인식된 적이 있고
-                                # 2. 0.5~5초 사이에 다시 인식되면 쌍자음으로 변환
+                                # 쌍자음 처리 로직 (개선)
+                                # 조건: 같은 자음을 0.5~3초 간격으로 두 번 인식
                                 if (predicted_char in DOUBLE_CONSONANT_MAP and 
                                     predicted_char == last_recognized_char.get(lang_key, '') and 
-                                    0.5 < time_diff < 5.0):  # 0.5초 이후 ~ 5초 이내
+                                    0.5 < time_diff < 3.0):
+                                    
                                     # 쌍자음으로 변환
                                     double_char = DOUBLE_CONSONANT_MAP[predicted_char]
                                     latest_char[lang_key] = double_char
-                                    print(f"🎯 쌍자음 변환: {predicted_char} + {predicted_char} → {double_char} (간격: {time_diff:.1f}초)")
-                                    # 쌍자음 인식 후 타이머 리셋 (연속 쌍자음 방지)
-                                    last_recognized_char[lang_key] = double_char
-                                    last_recognized_time[lang_key] = 0  # 리셋
+                                    print(f"🎯🎯 쌍자음 완성: {predicted_char} + {predicted_char} → {double_char} (간격: {time_diff:.1f}초)")
+                                    
+                                    # 쌍자음 완성 후 초기화
+                                    last_recognized_char[lang_key] = ""
+                                    last_recognized_time[lang_key] = 0
+                                    
                                 else:
                                     # 단일 자음으로 인식
                                     latest_char[lang_key] = predicted_char
-                                    print(f"🎯 확정 인식: {predicted_char} (신뢰도: {confidence:.3f})")
-                                    # 마지막 인식 정보 저장 (쌍자음 대기)
+                                    
+                                    # 쌍자음 가능 문자 표시
+                                    if predicted_char in DOUBLE_CONSONANT_MAP:
+                                        remaining_time = 3.0 - time_diff if time_diff > 0 else 3.0
+                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f}) → 다시 인식하면 {DOUBLE_CONSONANT_MAP[predicted_char]} (남은시간: {remaining_time:.1f}초)")
+                                    else:
+                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
+                                    
+                                    # 쌍자음 대기 정보 저장
                                     last_recognized_char[lang_key] = predicted_char
                                     last_recognized_time[lang_key] = current_time_sec
                         else:
@@ -214,7 +234,9 @@ def generate_frames(model, labels, lang_key, camera_device=0):
             cv2.putText(image, f"Text: {accumulated}", (10, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            ret, buffer = cv2.imencode('.jpg', image)
+            # JPEG 압축 최적화 (전송 속도 향상, 인식 정확도는 유지)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
+            ret, buffer = cv2.imencode('.jpg', image, encode_param)
             frame = buffer.tobytes()
 
             yield (b'--frame\r\n'
@@ -274,9 +296,9 @@ def video_feed_ksl():
     if is_emulator:
         # 에뮬레이터: 노트북 내장 카메라 찾기
         # macOS Continuity Camera 문제 회피: 1번 카메라 시도
-        camera_device = 1  # 노트북 내장 카메라 (보통 1번)
-        print("✅ 에뮬레이터 감지 → 노트북 내장 카메라 (1번) 사용")
-        print("   (0번은 Continuity Camera일 수 있음)")
+        camera_device = 0  # 0번 카메라 사용 (유일한 카메라)
+        print("✅ 에뮬레이터 감지 → 카메라 0번 사용")
+        print("   (iPhone Continuity Camera든 노트북 카메라든 0번만 존재)")
     else:
         camera_device = 0  # 실제 기기 전면 카메라
         print("✅ 실제 기기 감지 → 기기 전면 카메라 (0번) 사용")

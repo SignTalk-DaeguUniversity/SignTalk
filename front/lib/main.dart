@@ -11,10 +11,12 @@ import 'package:permission_handler/permission_handler.dart';
 import 'providers/auth_provider.dart';
 import 'services/progress_service.dart';
 import 'services/quiz_result_service.dart';
+import 'services/quiz_service.dart';
 import 'screens/auth_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/my_page_screen.dart';
 import 'services/recognition_service.dart';
+
 void main() {
   runApp(const SignTalkApp());
 }
@@ -45,7 +47,7 @@ class SignTalkHomePage extends StatefulWidget {
 
   @override
   State<SignTalkHomePage> createState() => _SignTalkHomePageState();
-  
+
   // 스킵된 항목 접근을 위한 정적 메서드
   static Set<String> getSkippedItems() {
     return _SignTalkHomePageState._skippedItems;
@@ -76,19 +78,25 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 낱말퀴즈용 섞인 문제 데이터
   List<Map<String, String>> _shuffledQuizData = [];
 
-  // 현재 퀴즈 데이터 가져오기 (낱말퀴즈는 섞인 데이터, 나머지는 원본)
+  // 백엔드 API 연동을 위한 변수들
+  String? _currentSessionId;
+  String? _currentQuizMode;
+  int _questionStartTime = 0;
+
+  // 현재 레벨 가져오기 (백엔드 API용)
+  int _getCurrentLevel() {
+    final levelProgress = _calculateLevelProgress();
+    return levelProgress['level'] ?? 1;
+  }
+
+  // 현재 퀴즈 데이터 가져오기 (백엔드에서 받은 _shuffledQuizData 사용)
   List<Map<String, String>> _getCurrentQuizData() {
-    if (selectedQuizType == '낱말퀴즈' && _shuffledQuizData.isNotEmpty) {
+    if (_shuffledQuizData.isNotEmpty) {
       return _shuffledQuizData;
     }
-    final data = quizData[selectedQuizType] ?? [];
-    if (data.isEmpty) {
-      // 기본 데이터 반환
-      return [
-        {'type': '테스트', 'question': '테스트', 'description': '테스트 문제입니다'}
-      ];
-    }
-    return data;
+
+    // 백엔드 데이터가 없으면 폴백 데이터 사용
+    return _generateFallbackQuestions(selectedQuizType);
   }
 
   // 안전한 현재 문제 데이터 가져오기
@@ -146,7 +154,19 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 레벨별 학습 구조 정의
   final Map<int, List<String>> levelStructure = {
-    1: ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ'], // 기초 자음 + 된소리 (11개)
+    1: [
+      'ㄱ',
+      'ㄲ',
+      'ㄴ',
+      'ㄷ',
+      'ㄸ',
+      'ㄹ',
+      'ㅁ',
+      'ㅂ',
+      'ㅃ',
+      'ㅅ',
+      'ㅆ',
+    ], // 기초 자음 + 된소리 (11개)
     2: ['ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'], // 고급 자음 + 된소리 (8개)
     3: ['ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ'], // 기본 모음 (10개)
     4: ['ㅐ', 'ㅒ', 'ㅔ', 'ㅖ'], // 이중 모음 (4개)
@@ -160,10 +180,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
     // 레벨 3: 기본 모음 (10개)
     'ㅏ', 'ㅑ', 'ㅓ', 'ㅕ', 'ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ', 'ㅣ',
-    // 레벨 4: 이중 모음 (4개)
-    'ㅐ', 'ㅒ', 'ㅔ', 'ㅖ',
-    // 레벨 5: 복합 모음 (7개)
-    'ㅘ', 'ㅙ', 'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ',
+    // 레벨 4: 이중 모음 (6개)
+    'ㅐ', 'ㅒ', 'ㅔ', 'ㅖ', 'ㅘ', 'ㅙ',
+    // 레벨 5: 복합 모음 (5개)
+    'ㅚ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅢ',
   ];
 
   // 한글 분해 함수 (유니코드 기반)
@@ -502,7 +522,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     '땅',
   ];
 
-  // 난이도별 문제 데이터
+  // 낱말퀴즈용 로컬 데이터 (백엔드 연결 실패 시에만 사용)
   final Map<String, List<Map<String, String>>> quizData = {
     '낱말퀴즈': [
       // 자음 14개
@@ -532,37 +552,22 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       {'type': '모음', 'question': 'ㅡ', 'description': '위 모음을 수어로 표현해주세요'},
       {'type': '모음', 'question': 'ㅣ', 'description': '위 모음을 수어로 표현해주세요'},
     ],
-    '초급': [
-      {'type': '받침 없는 글자', 'question': '아', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 없는 글자', 'question': '오', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 없는 글자', 'question': '우', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 없는 글자', 'question': '이', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 없는 글자', 'question': '어', 'description': '위 글자를 수어로 표현해주세요'},
-    ],
-    '중급': [
-      {'type': '받침 있는 글자', 'question': '안', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 있는 글자', 'question': '은', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 있는 글자', 'question': '을', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 있는 글자', 'question': '한', 'description': '위 글자를 수어로 표현해주세요'},
-      {'type': '받침 있는 글자', 'question': '밥', 'description': '위 글자를 수어로 표현해주세요'},
-    ],
-    '고급': [
-      {'type': '단어', 'question': '안녕', 'description': '위 단어를 수어로 표현해주세요'},
-      {'type': '단어', 'question': '사랑', 'description': '위 단어를 수어로 표현해주세요'},
-      {'type': '단어', 'question': '감사', 'description': '위 단어를 수어로 표현해주세요'},
-      {'type': '단어', 'question': '미안', 'description': '위 단어를 수어로 표현해주세요'},
-      {'type': '단어', 'question': '좋아', 'description': '위 단어를 수어로 표현해주세요'},
-    ],
+    // 초급, 중급, 고급은 백엔드 전용 - 로컬 데이터 제거됨
   };
 
   @override
   void initState() {
     super.initState();
-    // 초기화 후 잠시 대기 후 진도 불러오기
+    // 초기화 후 AuthProvider가 준비될 때까지 대기
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadUserProgress();
-      // 카메라 초기화는 카메라를 켤 때만 수행 (지연 로딩)
+      // AuthProvider 초기화를 위해 약간 대기
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _loadUserProgress();
+        }
+      });
     });
+    _initializeCamera();
   }
 
   @override
@@ -585,7 +590,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
     try {
       print('🔄 카메라 초기화 시작...');
-      
+
       // 플랫폼 감지: 실제 기기인지 에뮬레이터인지 확인
       useDeviceCamera = await _isRealDevice();
 
@@ -604,10 +609,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 실제 기기인지 확인
   Future<bool> _isRealDevice() async {
     try {
-      // Android: 테스트를 위해 서버 스트림 사용
+      // Android: 에뮬레이터에서는 서버 스트림 사용 (노트북 웹캠)
       if (Platform.isAndroid) {
-        // 테스트를 위해 서버 스트림 사용 (에뮬레이터 모드)
-        return false; // 서버 스트림으로 수어 인식 테스트
+        // 에뮬레이터에서는 서버 스트림으로 노트북 웹캠 사용
+        print(' Android 에뮬레이터 감지 - 서버 스트림 모드 사용 (노트북 웹캠)');
+        return false; // 서버 스트림으로 수어 인식
       }
       // iOS: 실제 기기에서는 디바이스 카메라 사용
       else if (Platform.isIOS) {
@@ -682,6 +688,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     // 로그인하지 않은 경우 진도를 불러오지 않음
     if (!mounted) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
     if (!authProvider.isLoggedIn) {
       setState(() {
         userProgress = null;
@@ -769,6 +776,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 현재 레벨과 진도 계산
   Map<String, dynamic> _calculateLevelProgress() {
     if (userProgress == null) {
+      // 백엔드 연결 실패 시 로컬 저장소에서 진도 복원 시도
+      print('⚠️ userProgress가 null입니다. 로컬 상태 확인 중...');
       return {'level': 1, 'progress': 0, 'currentStep': 0};
     }
 
@@ -972,26 +981,26 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   void _updateLocalProgressForSkip(String skippedCharacter) {
     try {
       print('🔄 스킵 로컬 진도 업데이트: $skippedCharacter');
-      
+
       // 현재 진도에서 완료된 레슨 가져오기
       final completedLessons = List<String>.from(
         userProgress?['completed_lessons'] ?? [],
       );
-      
+
       // 스킵된 항목을 완료된 레슨에 추가 (진도 계산을 위해)
       Set<String> uniqueLessons = completedLessons.toSet();
       if (!uniqueLessons.contains(skippedCharacter)) {
         uniqueLessons.add(skippedCharacter);
       }
-      
+
       // 학습 순서대로 정렬
       List<String> sortedLessons = learningSequence
           .where((char) => uniqueLessons.contains(char))
           .toList();
-      
+
       // 레벨 계산 (완료 + 스킵 포함)
       int currentLevel = _calculateCorrectLevel(sortedLessons.length);
-      
+
       // 로컬 진도 업데이트 (점수는 추가하지 않음 - 스킵이므로)
       setState(() {
         userProgress = {
@@ -1001,18 +1010,17 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           'total_score': userProgress?['total_score'] ?? 0, // 점수는 그대로 유지
         };
       });
-      
+
       print('스킵 후 업데이트된 진도: ${userProgress?['completed_lessons']}');
-      
+
       // 다음 학습 문자 확인
       final nextCharacter = getCurrentLearningCharacter();
       print('다음 학습 문자: $nextCharacter');
-      
+
       if (nextCharacter == '완료') {
         // 모든 학습 완료 시 축하 다이얼로그 표시
         _showAllLevelsCompletedDialog();
       }
-      
     } catch (e) {
       print('❌ 스킵 로컬 진도 업데이트 실패: $e');
     }
@@ -1022,9 +1030,51 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   Future<void> _updateBackendProgress(String completedCharacter) async {
     try {
       print('🎯 진도 업데이트 시작: $completedCharacter');
-      print('현재 진도: ${userProgress?['completed_lessons']}');
 
-      // 1. 인식 결과 저장
+      // 로컬 진도 먼저 업데이트
+      final completedLessons = List<String>.from(
+        userProgress?['completed_lessons'] ?? [],
+      );
+      Set<String> uniqueLessons = completedLessons.toSet();
+      if (!uniqueLessons.contains(completedCharacter)) {
+        uniqueLessons.add(completedCharacter);
+      }
+
+      List<String> sortedLessons = learningSequence
+          .where((char) => uniqueLessons.contains(char))
+          .toList();
+
+      int currentLevel = _calculateCorrectLevel(sortedLessons.length);
+
+      // 로컬 상태 즉시 업데이트
+      setState(() {
+        userProgress = {
+          'completed_lessons': sortedLessons,
+          'level': currentLevel,
+          'total_score': (userProgress?['total_score'] ?? 0) + 10,
+        };
+      });
+
+      // 다음 학습 문자 계산
+      final nextCharacter = getCurrentLearningCharacter();
+      print('🎯 다음 학습 문자: $nextCharacter');
+
+      // 성공 메시지 표시
+      if (nextCharacter == '완료') {
+        _showAllLevelsCompletedDialog();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ 정답! "$completedCharacter" 학습 완료. 다음: $nextCharacter',
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // 백엔드 업데이트 시도
       await ProgressService.saveRecognition(
         language: 'ksl',
         recognizedText: completedCharacter,
@@ -1032,79 +1082,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         sessionDuration: 0,
       );
 
-      // 2. 진도 업데이트 (레벨업 또는 완료된 레슨 추가)
-      final completedLessons = List<String>.from(
-        userProgress?['completed_lessons'] ?? [],
-      );
-
-      // 중복 제거
-      Set<String> uniqueLessons = completedLessons.toSet();
-
-      // 이미 완료한 레슨이 아닌 경우만 추가
-      if (!uniqueLessons.contains(completedCharacter)) {
-        uniqueLessons.add(completedCharacter);
-      }
-
-      // Set을 List로 변환 (순서 유지를 위해 학습 순서대로 정렬)
-      List<String> sortedLessons = learningSequence
-          .where((char) => uniqueLessons.contains(char))
-          .toList();
-
-      // 레벨별 구조에 맞게 레벨 계산
-      int currentLevel = _calculateCorrectLevel(sortedLessons.length);
-
-      final newProgressData = {
+      final result = await ProgressService.updateProgress('ksl', {
         'completed_lessons': sortedLessons,
         'level': currentLevel,
-        'total_score': (userProgress?['total_score'] ?? 0) + 10, // 점수 추가
-      };
+        'total_score': userProgress?['total_score'] ?? 0,
+      });
 
-      print('새로운 진도 데이터: $newProgressData');
-
-      final result = await ProgressService.updateProgress(
-        'ksl',
-        newProgressData,
-      );
-
-      print('진도 업데이트 결과: ${result['success']}');
-
-      if (result['success']) {
-        // 3. UI 업데이트
-        setState(() {
-          userProgress = result['progress'];
-        });
-
-        print('업데이트된 진도: ${userProgress?['completed_lessons']}');
-
-        // 4. 성공 메시지 표시
-        final nextCharacter = getCurrentLearningCharacter();
-        print('다음 학습 문자: $nextCharacter');
-
-        if (nextCharacter == '완료') {
-          // 모든 학습 완료 시 축하 다이얼로그 표시
-          _showAllLevelsCompletedDialog();
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✅ 정답! "$completedCharacter" 학습 완료. 다음: $nextCharacter',
-              ),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      } else {
-        print('❌ 진도 업데이트 실패: ${result['message']}');
-      }
+      print('📡 백엔드 업데이트: ${result['success']}');
     } catch (e) {
-      print('❌ 학습 진도 업데이트 실패: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('진도 저장에 실패했습니다: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      print('❌ 진도 업데이트 실패: $e');
     }
   }
 
@@ -1121,6 +1107,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       }
     });
   }
+
   void _stopTimer() {
     _timer?.cancel();
   }
@@ -1132,6 +1119,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     if (currentQuestionIndex < quizData.length - 1) {
       setState(() {
         currentQuestionIndex++;
+
+        // 새 문제 시작 시간 업데이트
+        _questionStartTime = DateTime.now().millisecondsSinceEpoch;
 
         if (isSequentialQuiz) {
           // 순차 퀴즈: 다음 단어로 이동
@@ -1280,7 +1270,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                                 );
                               },
                               child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                                 margin: const EdgeInsets.only(right: 8),
                                 decoration: BoxDecoration(
                                   color: Colors.red,
@@ -1320,7 +1312,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                             child: GestureDetector(
                               onTap: _skipCurrentProblem,
                               child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                                 margin: const EdgeInsets.only(left: 8),
                                 decoration: BoxDecoration(
                                   color: Colors.orange,
@@ -1370,7 +1364,6 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
                       // Recognition result area
                       _buildRecognitionArea(),
-
                     ] else ...[
                       // Quiz mode content
                       _buildQuizModeContent(),
@@ -1822,7 +1815,6 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
               ),
             ),
           ),
-
         ],
       ),
     );
@@ -1932,20 +1924,20 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 const SizedBox(width: 8),
                 // 카메라 끄기 버튼
                 GestureDetector(
-                    onTap: _toggleCamera,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Icon(
-                        Icons.close,
-                        color: Colors.white,
-                        size: 16,
-                      ),
+                  onTap: _toggleCamera,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 16,
                     ),
                   ),
+                ),
               ],
             ),
           ),
@@ -1957,6 +1949,55 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 학습모드일 때만 스킵 버튼 표시
+                if (isLearningMode && getCurrentLearningCharacter() != '완료')
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: () {
+                          _handleSkipLearning();
+                        },
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.skip_next,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                '스킵',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1987,20 +2028,20 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         const SizedBox(height: 20),
         // 카메라 켜기 버튼
         ElevatedButton.icon(
-            onPressed: _toggleCamera,
-            icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
-            label: Text(
-              isCameraOn ? '카메라 끄기' : '카메라 켜기',
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1F2937),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+          onPressed: _toggleCamera,
+          icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+          label: Text(
+            isCameraOn ? '카메라 끄기' : '카메라 켜기',
+            style: const TextStyle(color: Colors.white, fontSize: 14),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1F2937),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
             ),
           ),
+        ),
       ],
     );
   }
@@ -2010,13 +2051,20 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       // 카메라를 켤 때
       setState(() {
         isCameraOn = true;
+
+        // 학습 모드 세션 설정 (카메라 켜기 시)
+        if (isLearningMode && _currentSessionId == null) {
+          _currentSessionId =
+              'learning_${DateTime.now().millisecondsSinceEpoch}';
+          _questionStartTime = DateTime.now().millisecondsSinceEpoch;
+        }
       });
-      
+
       // 카메라가 초기화되지 않았으면 초기화 (지연 로딩)
       if (!_isCameraInitialized && _cameraController == null) {
         await _initializeCamera();
       }
-      
+
       if (useDeviceCamera) {
         // 디바이스 카메라 사용 시
         _startDeviceCameraRecognition();
@@ -2078,10 +2126,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   Future<void> _uploadImageToServer(XFile imageFile) async {
     try {
       List<String> serverUrls = [
-        'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+        'http://127.0.0.1:5002', // USB 디버깅 (ADB 포트 포워딩)
         'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
-        'http://10.0.2.2:5002',     // 에뮬레이터용
-        'http://localhost:5002',    // USB 디버깅 대안
+        'http://10.0.2.2:5002', // 에뮬레이터용
+        'http://localhost:5002', // USB 디버깅 대안
       ];
 
       for (String baseUrl in serverUrls) {
@@ -2143,12 +2191,12 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     }
 
     print('🔄 서버 스트림 URL 검색 중...');
-    
+
     List<String> serverUrls = [
-      'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+      'http://127.0.0.1:5002', // USB 디버깅 (ADB 포트 포워딩)
       'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
-      'http://10.0.2.2:5002',     // 에뮬레이터용
-      'http://localhost:5002',    // USB 디버깅 대안
+      'http://10.0.2.2:5002', // 에뮬레이터용
+      'http://localhost:5002', // USB 디버깅 대안
     ];
 
     for (String baseUrl in serverUrls) {
@@ -2202,7 +2250,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         try {
           // 🆕 새로운 API 먼저 시도
           final response = await http
-              .get(Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'))
+              .get(
+                Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'),
+              )
               .timeout(const Duration(seconds: 1));
 
           if (response.statusCode == 200) {
@@ -2255,17 +2305,19 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
       // 캐시된 URL이 실패하면 모든 URL 시도
       List<String> serverUrls = [
-        'http://127.0.0.1:5002',    // USB 디버깅 (ADB 포트 포워딩)
+        'http://127.0.0.1:5002', // USB 디버깅 (ADB 포트 포워딩)
         'http://192.168.45.98:5002', // WiFi 연결 (노트북 실제 IP)
-        'http://10.0.2.2:5002',     // 에뮬레이터용
-        'http://localhost:5002',    // USB 디버깅 대안
+        'http://10.0.2.2:5002', // 에뮬레이터용
+        'http://localhost:5002', // USB 디버깅 대안
       ];
 
       for (String baseUrl in serverUrls) {
         try {
           // 🆕 새로운 API 먼저 시도
           final response = await http
-              .get(Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'))
+              .get(
+                Uri.parse('$baseUrl/api/recognition/current/$currentLanguage'),
+              )
               .timeout(const Duration(seconds: 2));
 
           if (response.statusCode == 200) {
@@ -2328,7 +2380,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       // 기존 퀴즈 체크
       final currentQuestion = _getCurrentQuestion();
       if (currentQuestion == null) return;
-      
+
       String correctAnswer = currentQuestion['question']!;
 
       if (currentRecognition == correctAnswer) {
@@ -2858,9 +2910,50 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              '완료한 레슨: ${completedLessons.length}개',
-              style: const TextStyle(fontSize: 11, color: Color(0xFF718096)),
+            Row(
+              children: [
+                Text(
+                  '완료한 레슨: ${completedLessons.length}개',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF718096),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: Colors.orange.withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.skip_next,
+                        size: 12,
+                        color: Colors.orange[700],
+                      ),
+                      const SizedBox(width: 2),
+                      Text(
+                        '${_skippedItems.length}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.orange[700],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
             GestureDetector(
               onTap: () => _showResetProgressDialog(),
@@ -3444,14 +3537,20 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: () {
+                onPressed: () async {
+                  // 같은 모드로 퀴즈 다시 시작
+                  String currentMode = selectedQuizType;
                   setState(() {
                     showQuizResult = false;
-                    selectedQuizType = '';
                     currentQuestionIndex = 0;
                     correctAnswers = 0;
                     totalTimeSpent = 0;
+                    isQuizStarted = false;
+                    _shuffledQuizData.clear();
                   });
+
+                  // 백엔드에서 새로운 퀴즈 문제 생성
+                  await _startQuizWithBackend(currentMode);
                 },
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -3479,12 +3578,16 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             Expanded(
               child: ElevatedButton(
                 onPressed: () {
+                  // 퀴즈 모드 선택 화면으로 돌아가기
                   setState(() {
                     showQuizResult = false;
                     selectedQuizType = '';
                     currentQuestionIndex = 0;
                     correctAnswers = 0;
                     totalTimeSpent = 0;
+                    isQuizStarted = false;
+                    _shuffledQuizData.clear();
+                    // 퀴즈 모드 선택 화면으로 돌아감
                   });
                 },
                 style: ElevatedButton.styleFrom(
@@ -3512,8 +3615,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       ],
     );
   }
+
   Widget _buildStatCard(String value, String label, Color color) {
     return Container(
+      height: 100, // 고정 높이 설정
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: color.withOpacity(0.1),
@@ -3521,19 +3626,26 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Column(
+        mainAxisAlignment: MainAxisAlignment.center, // 중앙 정렬
         children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: color,
+          Flexible(
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: 20, // 폰트 크기 조정 (24 → 20)
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 1, // 한 줄로 제한
+              overflow: TextOverflow.ellipsis, // 넘치면 ... 표시
             ),
           ),
           const SizedBox(height: 4),
           Text(
             label,
             style: TextStyle(fontSize: 12, color: color.withOpacity(0.8)),
+            textAlign: TextAlign.center,
           ),
         ],
       ),
@@ -3673,30 +3785,53 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             children: [
               // 정답 표시
               if (showCorrectAnswer && isAnswerCorrect) ...[
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10B981),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.check_circle, color: Colors.white, size: 20),
-                      SizedBox(width: 8),
-                      Text(
-                        '정답입니다! 🎉',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
+                Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    const Text(
+                      '퀴즈 완료',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Color(0xFF718096),
+                        fontWeight: FontWeight.w500,
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.check_circle, color: Colors.white, size: 24),
+                          SizedBox(width: 12),
+                          Text(
+                            '정답입니다! 🎉',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '다음 문제로 이동합니다...',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Color(0xFF10B981),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               ] else ...[
                 // 기존 퀴즈 표시
@@ -3712,7 +3847,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                         ),
                       );
                     }
-                    
+
                     return Column(
                       children: [
                         Text(
@@ -3760,11 +3895,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   }
 
   Widget _buildQuizModeContent() {
-    return Column(
-      children: [
-        _buildQuizTypeButtons(),
-      ],
-    );
+    return Column(children: [_buildQuizTypeButtons()]);
   }
 
   Widget _buildQuizTypeButtons() {
@@ -3790,11 +3921,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   color: Colors.white.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(
-                  Icons.quiz,
-                  color: Colors.white,
-                  size: 20,
-                ),
+                child: const Icon(Icons.quiz, color: Colors.white, size: 20),
               ),
               const SizedBox(width: 12),
               const Expanded(
@@ -3811,10 +3938,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                     ),
                     Text(
                       '원하는 난이도를 선택하여 수어 퀴즈에 도전해보세요',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.white70,
-                      ),
+                      style: TextStyle(fontSize: 12, color: Colors.white70),
                     ),
                   ],
                 ),
@@ -3822,40 +3946,56 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             ],
           ),
         ),
-        
+
         const SizedBox(height: 16),
-        
+
         // 퀴즈 타입 카드들
-        _buildQuizTypeCard('낱말퀴즈', '24개 문제', '한국어 자음과 모음 랜덤퀴즈', 'Tr', const Color(0xFF6366F1)),
+        _buildQuizTypeCard(
+          '낱말퀴즈',
+          '40개 문제',
+          '한국어 자음과 모음 랜덤퀴즈',
+          'Tr',
+          const Color(0xFF6366F1),
+        ),
         const SizedBox(height: 12),
-        _buildQuizTypeCard('초급', '10개 문제', '받침 없는 글자 (자음 + 모음)', '1', const Color(0xFF10B981)),
+        _buildQuizTypeCard(
+          '초급',
+          '10개 문제',
+          '받침 없는 글자 (자음 + 모음)',
+          '1',
+          const Color(0xFF10B981),
+        ),
         const SizedBox(height: 12),
-        _buildQuizTypeCard('중급', '10개 문제', '받침 있는 글자 (자음 + 모음 + 받침)', '2', const Color(0xFF3B82F6)),
+        _buildQuizTypeCard(
+          '중급',
+          '5개 문제',
+          '받침 있는 글자 (자음 + 모음 + 받침)',
+          '2',
+          const Color(0xFF3B82F6),
+        ),
         const SizedBox(height: 12),
-        _buildQuizTypeCard('고급', '10개 문제', '복합 모음이 포함된 글자', '3', const Color(0xFFEF4444)),
+        _buildQuizTypeCard(
+          '고급',
+          '5개 문제',
+          '복합 모음이 포함된 글자',
+          '3',
+          const Color(0xFFEF4444),
+        ),
       ],
     );
   }
 
-  Widget _buildQuizTypeCard(String type, String problemCount, String description, String icon, Color color) {
+  Widget _buildQuizTypeCard(
+    String type,
+    String problemCount,
+    String description,
+    String icon,
+    Color color,
+  ) {
     return GestureDetector(
-      onTap: () {
-        setState(() {
-          selectedQuizType = type;
-          isQuizStarted = true;
-          currentQuestionIndex = 0;
-          correctAnswers = 0;
-          timeRemaining = 25;
-          totalTimeSpent = 0;
-          quizStartTime = DateTime.now();
-          
-          // 낱말퀴즈인 경우 데이터 섞기
-          if (type == '낱말퀴즈') {
-            _shuffledQuizData = List.from(quizData[type] ?? []);
-            _shuffledQuizData.shuffle();
-          }
-        });
-        _startTimer();
+      onTap: () async {
+        // 백엔드에서 퀴즈 문제 생성
+        await _startQuizWithBackend(type);
       },
       child: Container(
         padding: const EdgeInsets.all(16),
@@ -3958,7 +4098,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   ),
                 ),
                 TextSpan(
-                  text: '은 한국 수어 학습을 위한 교육 플랫폼입니다. AI를 이용한 기반 인식 시스템으로 실전 같은 학습 경험을 제공합니다.',
+                  text:
+                      '은 한국 수어 학습을 위한 교육 플랫폼입니다. AI를 이용한 기반 인식 시스템으로 실전 같은 학습 경험을 제공합니다.',
                 ),
               ],
             ),
@@ -3998,10 +4139,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                 Navigator.of(context).pop();
                 _resetProgress();
               },
-              child: const Text(
-                '초기화',
-                style: TextStyle(color: Colors.red),
-              ),
+              child: const Text('초기화', style: TextStyle(color: Colors.red)),
             ),
           ],
         );
@@ -4011,15 +4149,11 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   void _resetProgress() {
     setState(() {
-      userProgress = {
-        'level': 1,
-        'score': 0,
-        'completed_lessons': [],
-      };
+      userProgress = {'level': 1, 'score': 0, 'completed_lessons': []};
       currentLearningStep = 0;
       isLearningComplete = false;
     });
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('진도가 초기화되었습니다'),
@@ -4031,19 +4165,43 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   // 스킵된 항목 관리를 위한 정적 메서드
   static Set<String> _skippedItems = {};
 
-  // 스킵 기능
-  void _skipCurrentProblem() {
+  // 백엔드 API 연동 스킵 기능 (학습 모드용)
+  void _handleSkipLearning() async {
     if (isLearningMode) {
       // 학습 모드 스킵
       String currentTarget = getCurrentLearningCharacter();
       if (currentTarget != '완료') {
+        try {
+          // 백엔드 스킵 API 호출
+          final result = await QuizService.skipQuiz(
+            'ksl',
+            '학습모드',
+            currentTarget,
+            sessionId: _currentSessionId ?? 'learning_session',
+            level: _getCurrentLevel(),
+            correctAnswer: currentTarget,
+            responseTime:
+                (DateTime.now().millisecondsSinceEpoch - _questionStartTime)
+                    .toInt(),
+          );
+
+          if (result['success'] == true) {
+            print('✅ 백엔드 스킵 API 성공: ${result['message']}');
+          } else {
+            print('❌ 백엔드 스킵 API 실패: ${result['error']}');
+          }
+        } catch (e) {
+          print('❌ 백엔드 스킵 API 오류: $e');
+        }
+
+        // 로컬 상태 업데이트
         setState(() {
           _skippedItems.add(currentTarget);
         });
-        
+
         // 스킵 후 로컬 진도 업데이트 (다음 단계로 이동)
         _updateLocalProgressForSkip(currentTarget);
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('"$currentTarget"를 스킵했습니다'),
@@ -4052,25 +4210,220 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           ),
         );
       }
+    }
+  }
+
+  // 기존 스킵 기능 (퀴즈 모드용)
+  void _skipCurrentProblem() {
+    if (isLearningMode) {
+      // 학습 모드는 _handleSkipLearning() 사용
+      _handleSkipLearning();
     } else if (isQuizStarted) {
-      // 퀴즈 모드 스킵
-      final currentQuestion = _getCurrentQuestion();
-      if (currentQuestion != null) {
-        final skippedAnswer = currentQuestion['question'] ?? '';
-        setState(() {
-          _skippedItems.add(skippedAnswer);
-        });
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('"$skippedAnswer" 문제를 스킵했습니다'),
-            backgroundColor: Colors.orange,
-            duration: const Duration(seconds: 1),
-          ),
+      // 퀴즈 모드 스킵 (백엔드 API 연동)
+      _handleSkipQuiz();
+    }
+  }
+
+  // 퀴즈 모드 스킵 처리 (백엔드 API 연동)
+  void _handleSkipQuiz() async {
+    final currentQuestion = _getCurrentQuestion();
+    if (currentQuestion != null) {
+      final skippedAnswer = currentQuestion['question'] ?? '';
+
+      try {
+        // 백엔드 스킵 API 호출
+        final result = await QuizService.skipQuiz(
+          'ksl',
+          _currentQuizMode ?? '낱말퀴즈',
+          skippedAnswer,
+          sessionId: _currentSessionId ?? 'quiz_session',
+          level: _getCurrentLevel(),
+          correctAnswer: skippedAnswer,
+          responseTime:
+              (DateTime.now().millisecondsSinceEpoch - _questionStartTime)
+                  .toInt(),
         );
-        
-        _nextQuestion();
+
+        if (result['success'] == true) {
+          print('✅ 퀴즈 스킵 API 성공: ${result['message']}');
+        } else {
+          print('❌ 퀴즈 스킵 API 실패: ${result['error']}');
+        }
+      } catch (e) {
+        print('❌ 퀴즈 스킵 API 오류: $e');
       }
+
+      // 로컬 상태 업데이스트
+      setState(() {
+        _skippedItems.add(skippedAnswer);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('"$skippedAnswer" 문제를 스킵했습니다'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+
+      _nextQuestion();
+    }
+  }
+
+  // 백엔드 연결 실패 시 폴백 문제 생성
+  List<Map<String, String>> _generateFallbackQuestions(String type) {
+    switch (type) {
+      case '초급':
+        return [
+          {'type': type, 'question': '가', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '나', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '다', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '라', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '마', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '바', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '사', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '아', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '자', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '차', 'description': '위 글자를 수어로 표현해주세요'},
+        ];
+      case '중급':
+        return [
+          {'type': type, 'question': '각', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '밥', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '집', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '물', 'description': '위 글자를 수어로 표현해주세요'},
+          {'type': type, 'question': '책', 'description': '위 글자를 수어로 표현해주세요'},
+        ];
+      case '고급':
+        return [
+          {'type': type, 'question': '학교', 'description': '위 단어를 수어로 표현해주세요'},
+          {'type': type, 'question': '가족', 'description': '위 단어를 수어로 표현해주세요'},
+          {'type': type, 'question': '친구', 'description': '위 단어를 수어로 표현해주세요'},
+          {'type': type, 'question': '선생님', 'description': '위 단어를 수어로 표현해주세요'},
+          {'type': type, 'question': '공부', 'description': '위 단어를 수어로 표현해주세요'},
+        ];
+      default:
+        return [
+          {'type': type, 'question': 'ㄱ', 'description': '위 문자를 수어로 표현해주세요'},
+          {'type': type, 'question': 'ㄴ', 'description': '위 문자를 수어로 표현해주세요'},
+          {'type': type, 'question': 'ㄷ', 'description': '위 문자를 수어로 표현해주세요'},
+          {'type': type, 'question': 'ㅏ', 'description': '위 문자를 수어로 표현해주세요'},
+          {'type': type, 'question': 'ㅓ', 'description': '위 문자를 수어로 표현해주세요'},
+        ];
+    }
+  }
+
+  // 백엔드 API로 퀴즈 시작
+  Future<void> _startQuizWithBackend(String type) async {
+    try {
+      print('🎯 백엔드 퀴즈 시작: $type');
+      print('🔍 현재 _shuffledQuizData 상태: ${_shuffledQuizData.length}개');
+
+      // 1. 퀴즈 세션 시작
+      print('📡 1단계: 퀴즈 세션 시작 요청...');
+      final sessionResult = await QuizService.startQuizSession(
+        language: 'ksl',
+        quizType: type,
+      );
+      print('📡 세션 결과: $sessionResult');
+
+      if (sessionResult['success'] != true) {
+        throw Exception('퀴즈 세션 시작 실패: ${sessionResult['error']}');
+      }
+
+      // 2. 백엔드에서 퀴즈 문제 생성
+      print('📡 2단계: 퀴즈 문제 생성 요청...');
+      final quizResult = await QuizService.generateQuizByMode(
+        language: 'ksl',
+        mode: type,
+      );
+      print('📡 퀴즈 생성 결과: $quizResult');
+
+      if (quizResult['success'] != true) {
+        throw Exception('퀴즈 문제 생성 실패: ${quizResult['error']}');
+      }
+
+      // 3. 백엔드 데이터로 퀴즈 시작
+      final problems = quizResult['problems'] as List<dynamic>? ?? [];
+      final convertedProblems = QuizService.convertProblemsToAppFormat(
+        problems,
+        type,
+      );
+
+      print('🔍 백엔드 응답 데이터:');
+      print('  - 원본 problems: ${problems.length}개');
+      print('  - 변환된 problems: ${convertedProblems.length}개');
+      if (convertedProblems.isNotEmpty) {
+        print('  - 첫 번째 문제: ${convertedProblems[0]}');
+      }
+
+      setState(() {
+        selectedQuizType = type;
+        isQuizStarted = true;
+        currentQuestionIndex = 0;
+        correctAnswers = 0;
+        timeRemaining = 25;
+        totalTimeSpent = 0;
+        quizStartTime = DateTime.now();
+
+        // 백엔드 API 연동 설정
+        _currentQuizMode = type;
+        _currentSessionId = sessionResult['session_id'];
+        _questionStartTime = DateTime.now().millisecondsSinceEpoch;
+
+        // 백엔드에서 받은 문제 데이터 사용
+        _shuffledQuizData = convertedProblems;
+      });
+
+      _startTimer();
+
+      print('✅ 백엔드 퀴즈 시작 성공: ${problems.length}개 문제');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('백엔드에서 ${problems.length}개 문제를 불러왔습니다'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      print('❌ 백엔드 퀴즈 시작 실패: $e');
+
+      // 백엔드 실패 시 로컬 데이터로 폴백
+      setState(() {
+        selectedQuizType = type;
+        isQuizStarted = true;
+        currentQuestionIndex = 0;
+        correctAnswers = 0;
+        timeRemaining = 25;
+        totalTimeSpent = 0;
+        quizStartTime = DateTime.now();
+
+        // 로컬 폴백 설정
+        _currentQuizMode = type;
+        _currentSessionId =
+            'local_quiz_${DateTime.now().millisecondsSinceEpoch}';
+        _questionStartTime = DateTime.now().millisecondsSinceEpoch;
+
+        // 로컬 데이터 사용 (모든 모드 지원)
+        if (quizData.containsKey(type)) {
+          _shuffledQuizData = List.from(quizData[type] ?? []);
+          _shuffledQuizData.shuffle();
+        } else {
+          // 백엔드 전용 모드인 경우 기본 문제 생성
+          _shuffledQuizData = _generateFallbackQuestions(type);
+        }
+      });
+
+      _startTimer();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('백엔드 연결 실패, 로컬 데이터로 퀴즈를 시작합니다'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 }

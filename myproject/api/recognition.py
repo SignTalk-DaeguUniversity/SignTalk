@@ -19,6 +19,15 @@ recognition_bp = Blueprint('recognition', __name__)
 # 전역 세션 저장소
 active_sessions = {}
 
+# ==== 쌍자음 매핑 ====
+DOUBLE_CONSONANT_MAP = {
+    'ㄱ': 'ㄲ',
+    'ㄷ': 'ㄸ',
+    'ㅂ': 'ㅃ',
+    'ㅅ': 'ㅆ',
+    'ㅈ': 'ㅉ'
+}
+
 # ==== AI 모델 초기화 ====
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # myproject 폴더
 MODEL_DIR = os.path.join(BASE_DIR, "model")
@@ -84,7 +93,7 @@ def decode_base64_image(image_data):
         return None
 
 def analyze_sign_accuracy(image_data, target_sign, language):
-    """실제 AI 모델을 사용한 수어 정확도 분석"""
+    """실제 AI 모델을 사용한 수어 정확도 분석 (쌍자음 지원)"""
     
     # 모델이 초기화되지 않은 경우 폴백
     if not model_initialized or ksl_model is None:
@@ -138,11 +147,50 @@ def analyze_sign_accuracy(image_data, target_sign, language):
         else:
             predicted_sign = "UNKNOWN"
         
-        # 7. 정확도 계산
+        # 7. 쌍자음 처리 로직
+        # 목표가 쌍자음이고, 예측이 기본 자음인 경우 처리
+        is_double_consonant_target = target_sign in DOUBLE_CONSONANT_MAP.values()
+        base_consonant = None
+        
+        if is_double_consonant_target:
+            # 쌍자음의 기본 자음 찾기 (예: ㄸ → ㄷ)
+            for base, double in DOUBLE_CONSONANT_MAP.items():
+                if double == target_sign:
+                    base_consonant = base
+                    break
+            
+            # 기본 자음을 인식한 경우도 부분 점수 부여
+            if predicted_sign == base_consonant:
+                print(f"🎯 쌍자음 학습: {target_sign} 목표, {predicted_sign} 인식 → 부분 점수")
+                # 기본 자음 인식 시 70% 정확도 부여
+                accuracy = confidence_score * 70
+                is_correct = False  # 완전히 맞지는 않음
+                feedback = generate_detailed_feedback(accuracy, target_sign, language)
+                feedback['message'] = f'"{predicted_sign}" 모양이 맞아요! 조금 더 강하게 해서 "{target_sign}"을 만들어보세요 💪'
+                feedback['suggestions'] = [
+                    f'{predicted_sign} 모양에서 손에 더 힘을 주세요',
+                    f'손가락을 더 굽혀서 {target_sign}을 표현하세요',
+                    '쌍자음은 기본 자음보다 강한 느낌입니다'
+                ]
+                
+                return {
+                    'accuracy': round(accuracy, 1),
+                    'confidence': round(confidence_score, 2),
+                    'feedback': feedback,
+                    'hand_detected': True,
+                    'target_sign': target_sign,
+                    'predicted_sign': predicted_sign,
+                    'is_correct': is_correct,
+                    'is_partial_match': True,
+                    'base_consonant': base_consonant,
+                    'language': language
+                }
+        
+        # 8. 정확도 계산 (일반 케이스)
         is_correct = predicted_sign == target_sign
         accuracy = confidence_score * 100 if is_correct else max(0, confidence_score * 50)
         
-        # 8. 피드백 생성
+        # 9. 피드백 생성
         feedback = generate_detailed_feedback(accuracy, target_sign, language)
         
         return {
@@ -168,6 +216,7 @@ def fallback_analysis(target_sign, language):
         'F': 0.7, 'G': 0.6, 'H': 0.8, 'I': 0.9, 'J': 0.6,
         'Hello': 0.6, 'Thank you': 0.5, 'Please': 0.6,
         'ㄱ': 0.8, 'ㄴ': 0.7, 'ㄷ': 0.8, 'ㄹ': 0.6, 'ㅁ': 0.7,
+        'ㄲ': 0.6, 'ㄸ': 0.6, 'ㅃ': 0.6, 'ㅆ': 0.7, 'ㅉ': 0.6,  # 쌍자음은 더 어려움
         '안녕하세요': 0.5, '감사합니다': 0.4
     }
     

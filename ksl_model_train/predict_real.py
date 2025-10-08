@@ -4,6 +4,7 @@ import numpy as np
 from tensorflow.keras.models import load_model
 from PIL import ImageFont, ImageDraw, Image
 import os
+import time
 from collections import deque
 
 """All file paths are resolved relative to this script directory."""
@@ -35,6 +36,9 @@ MOTION_WEIGHTS = {0: 0.3, 8: 0.7}  # balanced weighting
 # Display behavior: hold final decision on-screen for N frames
 DISPLAY_HOLD_FRAMES = 20
 
+# Performance optimization
+FRAME_SKIP = 2  # Process every N frames (1=no skip, 2=half speed, more responsive)
+
 # 모델, 라벨, 정규화 통계 로딩
 try:
     model = load_model(MODEL_PATH)
@@ -45,17 +49,21 @@ except Exception as e:
     print(f"Error loading model or labels: {e}")
     exit()
 
-# Mediapipe 세팅
+# Mediapipe 세팅 (최적화)
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
+    model_complexity=0,  # 0=lite, 1=full (default) - 속도 우선
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5)
 mp_draw = mp.solutions.drawing_utils
 
-# 카메라
+# 카메라 (해상도 최적화)
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FPS, 30)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
@@ -83,6 +91,11 @@ base_label_buffer = deque(maxlen=WINDOW_FRAMES)
 motion_buffer = deque(maxlen=WINDOW_FRAMES)
 prev_xy = {}
 hold_counter = 0
+
+# Performance monitoring
+frame_count = 0
+fps_start_time = time.time()
+fps_display = 0.0
 
 # Mapping base consonant -> tense consonant
 BASE_TO_TENSE = {
@@ -180,12 +193,20 @@ while cap.isOpened():
     if not ret:
         print("Error: Failed to capture image.")
         break
-
+    
+    frame_count += 1
     image = cv2.flip(frame, 1)
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    result = hands.process(rgb_image)
+    
+    # Frame skipping for performance
+    should_process = (frame_count % FRAME_SKIP == 0)
+    
+    if should_process:
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        result = hands.process(rgb_image)
+    else:
+        result = None
 
-    if result.multi_hand_landmarks:
+    if result and result.multi_hand_landmarks:
         for hand_landmarks in result.multi_hand_landmarks:
             mp_draw.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
@@ -234,6 +255,16 @@ while cap.isOpened():
         image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     elif latest_char:
         cv2.putText(image, latest_char, TEXT_POSITION, cv2.FONT_HERSHEY_SIMPLEX, 2, BOX_COLOR_BGR, 3)
+    
+    # Performance overlay
+    if frame_count % 10 == 0:
+        elapsed = time.time() - fps_start_time
+        if elapsed > 0:
+            fps_display = frame_count / elapsed
+    
+    perf_text = f"FPS: {fps_display:.1f}"
+    cv2.putText(image, perf_text, (10, image.shape[0] - 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
     cv2.imshow("Sign Language Capture", image)
 
@@ -278,4 +309,12 @@ cap.release()
 cv2.destroyAllWindows()
 hands.close()
 
-print("Recognition ended.")
+# Performance report
+print("\n=== Performance Report ===")
+if frame_count > 0:
+    total_time = time.time() - fps_start_time
+    print(f"Total frames: {frame_count}")
+    print(f"Total time: {total_time:.2f}s")
+    print(f"Average FPS: {frame_count / total_time:.2f}")
+
+print("\nRecognition ended.")
