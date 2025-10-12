@@ -1,45 +1,71 @@
-from flask import Flask, render_template, Response, jsonify
+from flask import Flask, Response, jsonify, request
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
 import tensorflow as tf
 import os
-from deep_translator import GoogleTranslator
-from gtts import gTTS
-import subprocess
-from jamo import combine_hangul_jamo
+from datetime import datetime
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from config import Config
+from auth.models import db
+from auth.routes import auth_bp, bcrypt
+from api.progress import progress_bp
+from api.learning import learning_bp
+from api.recognition import recognition_bp
+from api.quiz import quiz_bp
+from api.jamo_decompose import jamo_decompose_bp
+from api.jamo_compose import jamo_compose_bp
 
 app = Flask(__name__)
+app.config.from_object(Config)
+
+# 확장 초기화
+db.init_app(app)
+bcrypt.init_app(app)
+jwt = JWTManager(app)
+CORS(app)  # Flutter와 통신을 위한 CORS 설정
+
+
+# JWT 블랙리스트 import
+from auth.routes import blacklisted_tokens
+
+# JWT 토큰 블랙리스트 체크 함수
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    """토큰이 블랙리스트에 있는지 확인"""
+    jti = jwt_payload['jti']
+    return jti in blacklisted_tokens
+    
+# 블루프린트 등록
+app.register_blueprint(auth_bp)
+app.register_blueprint(progress_bp)
+app.register_blueprint(learning_bp)
+app.register_blueprint(recognition_bp)
+app.register_blueprint(quiz_bp)
+app.register_blueprint(jamo_decompose_bp)
+app.register_blueprint(jamo_compose_bp)
 
 # ==== 경로 설정 ====
 BASE_DIR = os.path.dirname(__file__)
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-ASL_MODEL_PATH = os.path.join(MODEL_DIR, "asl_model.tflite")
-ASL_LABELS_PATH = os.path.join(MODEL_DIR, "asl_labels.npy")
-
-KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.tflite")
+KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.h5")
 KSL_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels.npy")
 
-# ==== 모델 로딩 ====
+# ==== 모델 로딩 (H5 모델) ====
 try:
-    asl_interpreter = tf.lite.Interpreter(model_path=ASL_MODEL_PATH)
-    asl_interpreter.allocate_tensors()
-    asl_input_details = asl_interpreter.get_input_details()
-    asl_output_details = asl_interpreter.get_output_details()
-    labels_asl = np.load(ASL_LABELS_PATH, allow_pickle=True)
-
-    ksl_interpreter = tf.lite.Interpreter(model_path=KSL_MODEL_PATH)
-    ksl_interpreter.allocate_tensors()
-    ksl_input_details = ksl_interpreter.get_input_details()
-    ksl_output_details = ksl_interpreter.get_output_details()
+    ksl_model = tf.keras.models.load_model(KSL_MODEL_PATH)
     labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
 
-    print("✅ ASL, KSL 모델 및 라벨 로딩 성공")
+    print("✅ KSL H5 모델 및 라벨 로딩 성공")
+    print(f"   - 모델 경로: {KSL_MODEL_PATH}")
+    print(f"   - 라벨 개수: {len(labels_ksl)}")
 except Exception as e:
     print(f"❌ 모델 로딩 실패: {e}")
-    exit()
+    print("📱 API 서버만 실행됩니다 (수어 인식 기능 비활성화)")
+    ksl_model = None
 
 # ==== Mediapipe 설정 ====
 mp_hands = mp.solutions.hands
@@ -51,27 +77,56 @@ hands = mp_hands.Hands(
 mp_draw = mp.solutions.drawing_utils
 
 # ==== 인식 결과 저장 ====
-recognized_string = {"asl": "", "ksl": ""}
-latest_char = {"asl": "", "ksl": ""}
+recognized_string = {"ksl": ""}
+latest_char = {"ksl": ""}
+last_recognized_char = {"ksl": ""}  # 이전 인식 문자
+last_recognized_time = {"ksl": 0}  # 이전 인식 시간
 
-# ==== 공통 영상 스트리밍 ====
-def generate_frames(interpreter, input_details, output_details, labels, lang_key):
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+# ==== 쌍자음 매핑 ====
+DOUBLE_CONSONANT_MAP = {
+    'ㄱ': 'ㄲ',
+    'ㄷ': 'ㄸ',
+    'ㅂ': 'ㅃ',
+    'ㅅ': 'ㅆ',
+    'ㅈ': 'ㅉ'
+}
 
+
+
+# ==== 공통 영상 스트리밍 (H5 모델용) ====
+def generate_frames(model, labels, lang_key, camera_device=0):
+    # 카메라 열기 (macOS 호환성 개선)
+    print(f"📷 카메라 {camera_device}번 열기 시도...")
+    cap = cv2.VideoCapture(camera_device)
+    
     if not cap.isOpened():
         print("❌ 카메라 열기 실패")
+        print("   - 다른 앱이 카메라를 사용 중인지 확인하세요")
+        print("   - 시스템 설정 > 개인정보 보호 > 카메라 권한을 확인하세요")
         return
+    
+    print(f"✅ 카메라 {camera_device}번 열기 성공")
+    
+    # 기본 설정만 적용 (macOS 호환성)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+    
+    print(f"📷 카메라 설정 완료: {actual_width}x{actual_height} @ {actual_fps}fps")
 
     last_prediction_time = 0
-    prediction_interval = 2  # seconds
+    prediction_interval = 0.4  # 0.4초마다 인식 (안정성 우선)
     prev_idx = -1
-    process_active = True
-    last_switch_time = time.time()
-    active_duration = 2
-    inactive_duration = 2
+    consecutive_same = 0  # 연속 같은 결과 카운트
+    last_predicted_char = ""
+    
+    # MediaPipe 항상 활성화 (성능 최적화)
+    print("🚀 MediaPipe 항상 활성화 모드")
 
     try:
         while True:
@@ -82,47 +137,106 @@ def generate_frames(interpreter, input_details, output_details, labels, lang_key
             if len(frame.shape) == 2 or frame.shape[2] == 1:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
-            image = cv2.flip(frame, 1)
+            # 이미지 전처리 최적화
+            image = cv2.flip(frame, 1)  # 좌우 반전
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             current_time = time.time()
 
-            if process_active and current_time - last_switch_time >= active_duration:
-                process_active = False
-                last_switch_time = current_time
-                print("🛑 Mediapipe 비활성화 (2초 휴식)")
-            elif not process_active and current_time - last_switch_time >= inactive_duration:
-                process_active = True
-                last_switch_time = current_time
-                print("✅ Mediapipe 활성화 (2초 실행)")
+            # MediaPipe 항상 활성화
+            result = hands.process(rgb_image)
 
-            if process_active:
-                result = hands.process(rgb_image)
+            if result.multi_hand_landmarks:
+                for hand_landmarks in result.multi_hand_landmarks:
+                    # 손 랜드마크 그리기
+                    mp_draw.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                if result.multi_hand_landmarks:
-                    for hand_landmarks in result.multi_hand_landmarks:
-                        mp_draw.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    if current_time - last_prediction_time >= prediction_interval:
+                        coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
+                        input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                        prediction = model.predict(input_data, verbose=0)
+                        idx = np.argmax(prediction)
+                        confidence = float(np.max(prediction))
 
-                        if current_time - last_prediction_time >= prediction_interval:
-                            coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
-                            input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
-                            interpreter.set_tensor(input_details[0]['index'], input_data)
-                            interpreter.invoke()
-                            prediction = interpreter.get_tensor(output_details[0]['index'])
-                            idx = np.argmax(prediction)
-
-                            if 0 <= idx < len(labels):
-                                latest_char[lang_key] = labels[idx]
+                        # 신뢰도 임계값 (쌍자음 인식 개선)
+                        min_confidence = 0.4  # 적당한 신뢰도로 조정
+                        if 0 <= idx < len(labels) and confidence > min_confidence:
+                            predicted_char = labels[idx]
+                            
+                            # 연속 같은 결과 확인 (안정성 향상)
+                            if predicted_char == last_predicted_char:
+                                consecutive_same += 1
                             else:
-                                latest_char[lang_key] = "ERR:IDX"
+                                consecutive_same = 1
+                                last_predicted_char = predicted_char
+                            
+                            # 2번 연속 같은 결과일 때 업데이트 (쌍자음 인식 최적화)
+                            if consecutive_same >= 2:
+                                current_time_sec = time.time()
+                                time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
+                                
+                                # 쌍자음 처리 로직 (개선)
+                                # 조건: 같은 자음을 0.5~3초 간격으로 두 번 인식
+                                if (predicted_char in DOUBLE_CONSONANT_MAP and 
+                                    predicted_char == last_recognized_char.get(lang_key, '') and 
+                                    0.5 < time_diff < 3.0):
+                                    
+                                    # 쌍자음으로 변환
+                                    double_char = DOUBLE_CONSONANT_MAP[predicted_char]
+                                    latest_char[lang_key] = double_char
+                                    print(f"🎯🎯 쌍자음 완성: {predicted_char} + {predicted_char} → {double_char} (간격: {time_diff:.1f}초)")
+                                    
+                                    # 쌍자음 완성 후 초기화
+                                    last_recognized_char[lang_key] = ""
+                                    last_recognized_time[lang_key] = 0
+                                    
+                                else:
+                                    # 단일 자음으로 인식
+                                    latest_char[lang_key] = predicted_char
+                                    
+                                    # 쌍자음 가능 문자 표시
+                                    if predicted_char in DOUBLE_CONSONANT_MAP:
+                                        remaining_time = 3.0 - time_diff if time_diff > 0 else 3.0
+                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f}) → 다시 인식하면 {DOUBLE_CONSONANT_MAP[predicted_char]} (남은시간: {remaining_time:.1f}초)")
+                                    else:
+                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
+                                    
+                                    # 쌍자음 대기 정보 저장
+                                    last_recognized_char[lang_key] = predicted_char
+                                    last_recognized_time[lang_key] = current_time_sec
+                        else:
+                            latest_char[lang_key] = ""
+                            consecutive_same = 0
+                            last_predicted_char = ""
 
-                            prev_idx = idx
-                            last_prediction_time = current_time
+                        prev_idx = idx
+                        last_prediction_time = current_time
+            else:
+                # 손이 감지되지 않으면 초기화
+                latest_char[lang_key] = ""
+                consecutive_same = 0
+                last_predicted_char = ""
+                # 쌍자음 타이머는 유지 (손을 떼도 3초 이내면 쌍자음 가능)
 
-            display_text = f"현재: {latest_char[lang_key]} | 누적: {recognized_string[lang_key]}"
-            cv2.putText(image, display_text, (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            # 디버깅 정보 표시
+            hands_detected = "YES" if result.multi_hand_landmarks else "NO"
+            current_char = latest_char[lang_key] if latest_char[lang_key] else "None"
+            
+            # 상단: 현재 인식 결과
+            cv2.putText(image, f"Current: {current_char}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # 중간: 손 감지 상태
+            cv2.putText(image, f"Hands: {hands_detected}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+            
+            # 하단: 누적 문자열
+            accumulated = recognized_string[lang_key][:10]  # 처음 10글자만
+            cv2.putText(image, f"Text: {accumulated}", (10, 90),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            ret, buffer = cv2.imencode('.jpg', image)
+            # JPEG 압축 최적화 (전송 속도 향상, 인식 정확도는 유지)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
+            ret, buffer = cv2.imencode('.jpg', image, encode_param)
             frame = buffer.tobytes()
 
             yield (b'--frame\r\n'
@@ -137,35 +251,138 @@ def generate_frames(interpreter, input_details, output_details, labels, lang_key
 # ==== 라우팅 ====
 @app.route('/')
 def index():
-    return render_template('index.html')
-
-@app.route('/asl')
-def asl_page():
-    return render_template('asl.html')
-
-@app.route('/ksl')
-def ksl_page():
-    return render_template('ksl.html')
-
-@app.route('/video_feed_asl')
-def video_feed_asl():
-    return Response(generate_frames(asl_interpreter, asl_input_details, asl_output_details, labels_asl, "asl"),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+    """서버 상태 확인 페이지"""
+    return jsonify({
+        'server': 'SignTalk API Server',
+        'status': 'running',
+        'version': '1.0.0',
+        'endpoints': {
+            'video_stream': '/video_feed_ksl',
+            'recognition': '/api/recognition/current/<lang>',
+            'health': '/api/auth/health',
+            'progress': '/api/progress/<lang>'
+        }
+    })
 
 @app.route('/video_feed_ksl')
 def video_feed_ksl():
-    return Response(generate_frames(ksl_interpreter, ksl_input_details, ksl_output_details, labels_ksl, "ksl"),
+    if ksl_model is None:
+        return jsonify({'error': 'KSL 모델이 로드되지 않았습니다.'}), 503
+    
+    # 클라이언트 정보 확인 (에뮬레이터 vs 실제 기기)
+    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', ''))
+    user_agent = request.headers.get('User-Agent', '')
+    remote_addr = request.environ.get('REMOTE_ADDR', '')
+    
+    print("="*60)
+    print(f"🔍 비디오 스트림 요청 상세:")
+    print(f"   - HTTP_X_FORWARDED_FOR: {request.environ.get('HTTP_X_FORWARDED_FOR', 'None')}")
+    print(f"   - REMOTE_ADDR: {remote_addr}")
+    print(f"   - Client IP (최종): {client_ip}")
+    print(f"   - User-Agent: {user_agent}")
+    print(f"   - Request URL: {request.url}")
+    print("="*60)
+    
+    # 에뮬레이터 감지 (더 강력한 조건)
+    is_emulator = (
+        '10.0.2.2' in str(client_ip) or
+        '10.0.2.2' in str(remote_addr) or
+        '127.0.0.1' in str(client_ip) or
+        'localhost' in str(client_ip) or
+        '::1' in str(client_ip)  # IPv6 localhost
+    )
+    
+    # 카메라 선택
+    if is_emulator:
+        # 에뮬레이터: 노트북 내장 카메라 찾기
+        # macOS Continuity Camera 문제 회피: 1번 카메라 시도
+        camera_device = 0  # 0번 카메라 사용 (유일한 카메라)
+        print("✅ 에뮬레이터 감지 → 카메라 0번 사용")
+        print("   (iPhone Continuity Camera든 노트북 카메라든 0번만 존재)")
+    else:
+        camera_device = 0  # 실제 기기 전면 카메라
+        print("✅ 실제 기기 감지 → 기기 전면 카메라 (0번) 사용")
+    
+    print(f"📷 최종 선택된 카메라: {camera_device}번")
+    print("="*60)
+    
+    return Response(generate_frames(ksl_model, labels_ksl, "ksl", camera_device),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/get_string/<lang>')
-def get_string(lang):
-    return {'string': recognized_string[lang], 'current': latest_char[lang]}
+@app.route('/api/recognition/current/<lang>')
+@app.route('/get_string/<lang>')  # 하위 호환성
+def get_current_recognition(lang):
+    """현재 인식 결과 반환 (통합 API)"""
+    current_char = latest_char.get(lang, '')
+    accumulated_string = recognized_string.get(lang, '')
+    
+    # 디버깅 정보
+    print(f"📱 인식 결과 요청: {lang} - Current: '{current_char}', String: '{accumulated_string}'")
+    
+    return jsonify({
+        # 새 API 형식
+        'current_character': current_char,
+        'accumulated_string': accumulated_string,
+        # 기존 API 형식 (하위 호환성)
+        'current': current_char,
+        'string': accumulated_string,
+        # 추가 정보
+        'timestamp': time.time(),
+        'language': lang,
+        'has_current': bool(current_char and current_char.strip())
+    })
+
+@app.route('/camera_info')
+def camera_info():
+    """현재 카메라 설정 정보 반환"""
+    try:
+        # 클라이언트 정보
+        client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', ''))
+        user_agent = request.headers.get('User-Agent', '')
+        
+        # 에뮬레이터 감지
+        is_emulator = (
+            '10.0.2.2' in client_ip or
+            '127.0.0.1' in client_ip or
+            'localhost' in client_ip
+        )
+        
+        return jsonify({
+            'client_ip': client_ip,
+            'user_agent': user_agent,
+            'is_emulator': is_emulator,
+            'camera_device': 0,  # 항상 0번 카메라 사용
+            'camera_type': 'laptop_webcam' if is_emulator else 'device_front_camera',
+            'platform': {
+                'system': os.name,
+                'platform': __import__('platform').system()
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/health')
+def health_check():
+    """서버 상태 확인 (Flutter 앱용)"""
+    return jsonify({
+        'status': 'healthy',
+        'server': 'SignTalk API Server',
+        'version': '1.0.0',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
 
 @app.route('/add_char/<lang>')
 def add_char(lang):
-    if latest_char[lang] and latest_char[lang] not in ["ERR:IDX", "ERR:DIM"]:
+    if latest_char[lang] and latest_char[lang] not in ["ERR:IDX", "ERR:DIM", ""]:
         recognized_string[lang] += latest_char[lang]
-    return jsonify({'success': True})
+        print(f"✅ 문자 추가: {latest_char[lang]} → {recognized_string[lang]}")
+    return jsonify({
+        'success': True, 
+        'current': latest_char[lang],
+        'accumulated': recognized_string[lang]
+    })
+
+
 
 @app.route('/remove_char/<lang>')
 def remove_char(lang):
@@ -178,68 +395,92 @@ def clear_string(lang):
     recognized_string[lang] = ""
     return jsonify({'success': True})
 
-@app.route('/translate/<lang>')
-def translate(lang):
-    original = combine_hangul_jamo(list(recognized_string[lang].strip())) or "Hello"
+@app.route('/upload_image/<lang>', methods=['POST'])
+def upload_image(lang):
+    """디바이스 카메라에서 촬영한 이미지를 받아서 수어 인식 처리"""
     try:
-        en = GoogleTranslator(source='auto', target='en').translate(original)
-        ko = GoogleTranslator(source='auto', target='ko').translate(original)
-        zh = GoogleTranslator(source='auto', target='zh-CN').translate(original)
-        ja = GoogleTranslator(source='auto', target='ja').translate(original)
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image file provided'}), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'error': 'No image file selected'}), 400
+        
+        # 이미지 파일을 numpy 배열로 변환
+        import numpy as np
+        from PIL import Image
+        import io
+        
+        # 파일을 메모리에서 읽기
+        image_bytes = file.read()
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # OpenCV 형식으로 변환
+        image_array = np.array(image)
+        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+            # RGB to BGR 변환 (OpenCV는 BGR 사용)
+            image_array = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        
+        # 수어 인식 처리
+        result = process_uploaded_image(image_array, lang)
+        
+        return jsonify({
+            'success': True,
+            'recognized_character': result.get('character', ''),
+            'confidence': result.get('confidence', 0.0)
+        })
+        
     except Exception as e:
-        print("❌ 번역 실패:", e)
-        en = ko = zh = ja = "(번역 오류)"
+        print(f"❌ 이미지 업로드 처리 실패: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    # 뒤로가기 주소 결정
-    prev_url = f"/{lang}" if lang in ["asl", "ksl"] else "/"
-
-    return render_template('translate.html', ko=ko, en=en, zh=zh, ja=ja, prev_url=prev_url)
-
-
-@app.route('/edu/<lang>')
-def edu_page(lang):
-    string = recognized_string.get(lang, "")
-    chars = list(string)
-    return render_template("edu.html", chars=chars, lang=lang)
-
-# ==== TTS 음성 출력 ====
-@app.route('/speak/<lang_code>')
-def speak(lang_code):
+def process_uploaded_image(image, lang):
+    """업로드된 이미지에서 수어 인식 처리"""
     try:
-        # 조합된 한글 문자열 만들기 (자모 → 완성형)
-        raw = recognized_string["asl"] or recognized_string["ksl"]
-        original_text = combine_hangul_jamo(list(raw.strip())) if raw else ""
-
-        if not original_text:
-            return jsonify({'success': False, 'msg': '인식된 문자열이 없습니다.'})
-
-        # 번역 결과 사용 (정확한 발음을 위해)
-        text_map = {
-            "ko": original_text,
-            "en": GoogleTranslator(source='ko', target='en').translate(original_text),
-            "zh": GoogleTranslator(source='ko', target='zh-CN').translate(original_text),
-            "ja": GoogleTranslator(source='ko', target='ja').translate(original_text),
-        }
-
-        text = text_map.get(lang_code, "")
-        if not text:
-            return jsonify({'success': False, 'msg': '해당 언어 코드가 유효하지 않습니다.'})
-
-        tts = gTTS(text=text, lang=lang_code)
-        mp3_path = os.path.join(BASE_DIR, "temp.mp3")
-        wav_path = os.path.join(BASE_DIR, "temp.wav")
-        tts.save(mp3_path)
-
-        subprocess.run(["ffmpeg", "-y", "-i", mp3_path, wav_path],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["aplay", wav_path],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        return jsonify({'success': True})
+        # 언어별 모델 선택
+        if lang == 'ksl':
+            model = ksl_model
+            labels = labels_ksl
+        else:
+            # ASL 모델이 있다면 여기서 처리
+            return {'character': '', 'confidence': 0.0}
+        
+        if model is None:
+            return {'character': '', 'confidence': 0.0}
+        
+        # 이미지 크기 조정
+        image = cv2.resize(image, (320, 240))
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # MediaPipe로 손 랜드마크 추출
+        result = hands.process(rgb_image)
+        
+        if result.multi_hand_landmarks:
+            for hand_landmarks in result.multi_hand_landmarks:
+                # 좌표 추출
+                coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
+                input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                
+                # 모델 추론 (H5 모델)
+                prediction = model.predict(input_data, verbose=0)
+                
+                idx = np.argmax(prediction)
+                confidence = float(np.max(prediction))
+                
+                if 0 <= idx < len(labels):
+                    character = labels[idx]
+                    # 전역 변수 업데이트
+                    latest_char[lang] = character
+                    return {'character': character, 'confidence': confidence}
+        
+        return {'character': '', 'confidence': 0.0}
+        
     except Exception as e:
-        print(f"❌ 음성 출력 실패: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        print(f"❌ 이미지 처리 실패: {e}")
+        return {'character': '', 'confidence': 0.0}
+
+
 
 if __name__ == '__main__':
+    # 실제 기기에서 접근 가능하도록 0.0.0.0으로 바인딩
     app.run(debug=True, host='0.0.0.0', port=5002)
-

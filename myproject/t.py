@@ -14,4 +14,3 @@ for i in range(5):
         cap.release()
     else:
         print(f"❌ /dev/video{i} 열기 실패")
-
