@@ -1,3 +1,5 @@
 {
-    "kiroAgent.configureMCP": "Disabled"
+    "kiroAgent.configureMCP": "Disabled",
+    "cmake.sourceDirectory": "/Users/kwoncheeun/Desktop/SignTalk/front/linux",
+    "java.configuration.updateBuildConfiguration": "interactive"
 }
