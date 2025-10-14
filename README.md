@@ -5,7 +5,13 @@
 
 ![판넬 디자인](./image/panel-design.png)
 
-![프로젝트 소개](./image/image.png)
+![팀소개](./image/image.png)
+
+## 프로젝트 소개 및 시연영상
+
+[![SignTalk 시연영상](https://img.youtube.com/vi/2KltbP_Fdjo/0.jpg)](https://youtu.be/2KltbP_Fdjo)
+
+[YouTube에서 보기](https://youtu.be/2KltbP_Fdjo)
 
 ---
 
