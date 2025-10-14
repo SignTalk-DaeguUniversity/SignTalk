@@ -2,9 +2,10 @@
 
 수어 번역 및 학습 플랫폼
 
-## 판넬 디자인
 
 ![판넬 디자인](./image/panel-design.png)
+
+![프로젝트 소개](./image/image.png)
 
 ---
 
