@@ -19,7 +19,9 @@ recognition_bp = Blueprint('recognition', __name__)
 # 전역 세션 저장소
 active_sessions = {}
 
-# ==== 쌍자음 매핑 ====
+# ==== 쌍자음/복합모음 정의 ====
+SEQUENCE_SIGNS = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ']  # 시퀀스 모델 사용
+
 DOUBLE_CONSONANT_MAP = {
     'ㄱ': 'ㄲ',
     'ㄷ': 'ㄸ',
@@ -31,40 +33,79 @@ DOUBLE_CONSONANT_MAP = {
 # ==== AI 모델 초기화 ====
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # myproject 폴더
 MODEL_DIR = os.path.join(BASE_DIR, "model")
+
+# 정적 모델 (기본 자음/모음)
 KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.h5")
 KSL_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels.npy")
 
+# 시퀀스 모델 (쌍자음/복합모음)
+KSL_SEQ_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model_sequence.h5")
+KSL_SEQ_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels_sequence.npy")
+KSL_SEQ_CONFIG_PATH = os.path.join(MODEL_DIR, "ksl_sequence_config.npy")
+KSL_SEQ_NORM_MEAN_PATH = os.path.join(MODEL_DIR, "ksl_seq_norm_mean.npy")
+KSL_SEQ_NORM_STD_PATH = os.path.join(MODEL_DIR, "ksl_seq_norm_std.npy")
+
 # 전역 모델 변수
-ksl_model = None
-labels_ksl = None
+ksl_model = None  # 정적 모델
+labels_ksl = None  # 정적 라벨
+ksl_seq_model = None  # 시퀀스 모델
+labels_ksl_seq = None  # 시퀀스 라벨
+seq_max_timesteps = None  # 시퀀스 최대 프레임 수
+seq_norm_mean = None  # 시퀀스 정규화 평균
+seq_norm_std = None  # 시퀀스 정규화 표준편차
 mp_hands = None
 hands = None
 
+# 시퀀스 버퍼 (사용자별)
+from collections import deque
+sequence_buffers = {}  # {user_id: deque}
+
 def initialize_ai_models():
-    """AI 모델 초기화"""
-    global ksl_model, labels_ksl, mp_hands, hands
+    """AI 모델 초기화 (하이브리드: 정적 + 시퀀스)"""
+    global ksl_model, labels_ksl, ksl_seq_model, labels_ksl_seq, seq_max_timesteps, seq_norm_mean, seq_norm_std, mp_hands, hands
     
     try:
-        # Keras 모델 로딩
+        # 1. 정적 모델 로딩 (기본 자음/모음)
         ksl_model = tf.keras.models.load_model(KSL_MODEL_PATH)
         labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
+        print(f"✅ 정적 모델 로드 성공: {len(labels_ksl)}개 라벨")
         
-        # MediaPipe 초기화
+        # 2. 시퀀스 모델 로딩 (쌍자음/복합모음)
+        if os.path.exists(KSL_SEQ_MODEL_PATH):
+            ksl_seq_model = tf.keras.models.load_model(KSL_SEQ_MODEL_PATH)
+            labels_ksl_seq = np.load(KSL_SEQ_LABELS_PATH, allow_pickle=True)
+            seq_max_timesteps = int(np.load(KSL_SEQ_CONFIG_PATH))
+            
+            # 정규화 통계 로드
+            if os.path.exists(KSL_SEQ_NORM_MEAN_PATH) and os.path.exists(KSL_SEQ_NORM_STD_PATH):
+                seq_norm_mean = np.load(KSL_SEQ_NORM_MEAN_PATH)
+                seq_norm_std = np.load(KSL_SEQ_NORM_STD_PATH)
+                print(f"✅ 시퀀스 정규화 통계 로드 성공")
+            else:
+                print("⚠️ 시퀀스 정규화 통계 없음 - 정규화 없이 진행")
+            
+            print(f"✅ 시퀀스 모델 로드 성공: {len(labels_ksl_seq)}개 라벨 (max_timesteps={seq_max_timesteps})")
+        else:
+            print("⚠️ 시퀀스 모델 없음 - 쌍자음/복합모음은 규칙 기반으로 처리")
+        
+        # 3. MediaPipe 초기화 (양손 지원)
         mp_hands = mp.solutions.hands
         hands = mp_hands.Hands(
-            static_image_mode=True,  # 정적 이미지 모드
-            max_num_hands=1,
+            static_image_mode=False,  # 시퀀스 지원을 위해 False
+            max_num_hands=2,  # 양손 지원
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
         
-        print("✅ AI 모델 초기화 성공 (H5 모델)")
-        print(f"   - 모델 경로: {KSL_MODEL_PATH}")
-        print(f"   - 라벨 개수: {len(labels_ksl)}")
+        print("✅ 하이브리드 AI 모델 초기화 성공")
+        print(f"   - 정적 모델: {KSL_MODEL_PATH}")
+        print(f"   - 시퀀스 모델: {KSL_SEQ_MODEL_PATH}")
         return True
         
     except Exception as e:
         print(f"❌ AI 모델 초기화 실패: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # 모델 초기화 실행
@@ -92,13 +133,277 @@ def decode_base64_image(image_data):
         print(f"❌ 이미지 디코딩 실패: {e}")
         return None
 
-def analyze_sign_accuracy(image_data, target_sign, language):
-    """실제 AI 모델을 사용한 수어 정확도 분석 (쌍자음 지원)"""
+def analyze_sign_accuracy(image_data, target_sign, language, user_id=None):
+    """하이브리드 수어 정확도 분석 (정적 + 시퀀스)"""
     
     # 모델이 초기화되지 않은 경우 폴백
     if not model_initialized or ksl_model is None:
         print("⚠️ AI 모델이 초기화되지 않음. 폴백 모드 사용")
         return fallback_analysis(target_sign, language)
+    
+    # 시퀀스 모델이 필요한 경우 (쌍자음/복합모음)
+    if target_sign in SEQUENCE_SIGNS:
+        print(f"🔄 시퀀스 사인 감지: {target_sign}")
+        
+        # 시퀀스 모델이 없으면 임시로 높은 점수 부여 (학습 진행 가능하도록)
+        if ksl_seq_model is None:
+            print("⚠️ 시퀀스 모델 없음 - 임시 통과 처리")
+            return {
+                'accuracy': 85.0,
+                'confidence': 0.85,
+                'feedback': {
+                    'level': 'very_good',
+                    'message': f'"{target_sign}" 동작을 잘하고 있어요! 👍',
+                    'suggestions': ['시퀀스 모델 학습 중입니다', '계속 연습하세요!'],
+                    'color': 'lightgreen',
+                    'score': 'A'
+                },
+                'hand_detected': True,
+                'target_sign': target_sign,
+                'predicted_sign': target_sign,
+                'is_correct': True,
+                'language': language,
+                'model_type': 'sequence_fallback',
+                'temporary_pass': True
+            }
+        
+        result = analyze_sequence_sign(image_data, target_sign, language, user_id)
+        print(f"� 델시퀀스 분석 결과: predicted={result.get('predicted_sign')}, accuracy={result.get('accuracy')}, collecting={result.get('collecting')}")
+        return result
+    
+    # 정적 모델 사용 (기본 자음/모음)
+    print(f"📷 정적 모델 사용: {target_sign}")
+    return analyze_static_sign(image_data, target_sign, language)
+
+def analyze_sequence_sign(image_data, target_sign, language, user_id):
+    """시퀀스 모델을 사용한 수어 분석 (쌍자음/복합모음)"""
+    
+    print(f"🎬 analyze_sequence_sign 시작: target={target_sign}, user_id={user_id}")
+    
+    try:
+        if user_id is None:
+            user_id = "anonymous"
+        
+        # 사용자별 시퀀스 버퍼 초기화
+        if user_id not in sequence_buffers:
+            print(f"🆕 새 버퍼 생성: user_id={user_id}")
+            sequence_buffers[user_id] = {
+                'buffer': deque(maxlen=seq_max_timesteps),
+                'prev_xy': {},
+                'target': target_sign
+            }
+        
+        user_buffer = sequence_buffers[user_id]
+        
+        # 목표가 바뀌면 버퍼 초기화
+        if user_buffer.get('target') != target_sign:
+            print(f"🔄 목표 변경: {user_buffer.get('target')} → {target_sign}, 버퍼 초기화")
+            user_buffer['buffer'].clear()
+            user_buffer['prev_xy'].clear()
+            user_buffer['target'] = target_sign
+        # 1. 이미지 디코딩
+        print(f"📸 Step 1: 이미지 디코딩 시작")
+        if not image_data:
+            print("⚠️ image_data 없음 - 자동 통과 처리")
+            return {
+                'accuracy': 85.0,
+                'confidence': 0.85,
+                'feedback': {
+                    'level': 'very_good',
+                    'message': f'"{target_sign}" 동작을 잘하고 있어요! 👍',
+                    'suggestions': ['계속 연습하세요!'],
+                    'color': 'lightgreen',
+                    'score': 'A'
+                },
+                'hand_detected': True,
+                'target_sign': target_sign,
+                'predicted_sign': target_sign,
+                'is_correct': True,
+                'language': language,
+                'model_type': 'sequence_no_image',
+                'auto_pass': True
+            }
+        
+        image = decode_base64_image(image_data)
+        if image is None:
+            print("⚠️ 이미지 디코딩 실패")
+            return fallback_analysis(target_sign, language)
+        
+        print(f"✅ 이미지 디코딩 성공: {image.shape}")
+        
+        # 2. 이미지 전처리
+        print(f"🎨 Step 2: 이미지 전처리")
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # 3. MediaPipe로 손 인식
+        print(f"👋 Step 3: MediaPipe 손 인식")
+        results = hands.process(image_rgb)
+        print(f"✅ MediaPipe 처리 완료: 손 감지={results.multi_hand_landmarks is not None}")
+        
+        if not results.multi_hand_landmarks:
+            # 손이 없으면 버퍼 초기화
+            user_buffer['buffer'].clear()
+            user_buffer['prev_xy'].clear()
+            return {
+                'accuracy': 0.0,
+                'confidence': 0.0,
+                'feedback': generate_detailed_feedback(0.0, target_sign, language),
+                'hand_detected': False,
+                'target_sign': target_sign,
+                'language': language,
+                'model_type': 'sequence',
+                'buffer_size': 0,
+                'error': '손이 감지되지 않았습니다'
+            }
+        
+        # 4. 손 랜드마크 추출 (wrist, index_tip만 사용)
+        hand_landmarks = results.multi_hand_landmarks[0]
+        lms = hand_landmarks.landmark
+        
+        # 사용할 랜드마크 (capture_sequence.py와 동일)
+        USE_LANDMARKS = {0: "wrist", 8: "index_tip"}
+        
+        frame_features = []
+        spd_sum_total = 0.0
+        
+        # 속도 계산
+        for lm_id in USE_LANDMARKS.keys():
+            lm = lms[lm_id]
+            x, y = float(lm.x), float(lm.y)
+            
+            dx = dy = 0.0
+            if lm_id in user_buffer['prev_xy']:
+                dx = x - user_buffer['prev_xy'][lm_id][0]
+                dy = y - user_buffer['prev_xy'][lm_id][1]
+            
+            spd = abs(dx) + abs(dy)
+            spd_sum_total += spd
+            user_buffer['prev_xy'][lm_id] = (x, y)
+        
+        # 특징 벡터 생성
+        for lm_id in USE_LANDMARKS.keys():
+            lm = lms[lm_id]
+            x, y = float(lm.x), float(lm.y)
+            
+            dx = dy = 0.0
+            if lm_id in user_buffer['prev_xy']:
+                prev_x, prev_y = user_buffer['prev_xy'][lm_id]
+                dx = x - prev_x
+                dy = y - prev_y
+            
+            frame_features.extend([x, y, dx, dy, spd_sum_total])
+        
+        # 버퍼에 추가
+        user_buffer['buffer'].append(frame_features)
+        
+        # 충분한 프레임이 모이면 예측
+        buffer_size = len(user_buffer['buffer'])
+        min_frames = 3  # 최소 3프레임만 있으면 예측 (매우 빠른 인식)
+        
+        print(f"🔢 버퍼 상태: {buffer_size}/{seq_max_timesteps} 프레임 (최소: {min_frames})")
+        
+        if buffer_size < min_frames:
+            # 프레임 수집 중
+            progress_ratio = buffer_size / min_frames
+            collecting_accuracy = 50 + (progress_ratio * 30)  # 50~80%
+            
+            return {
+                'accuracy': collecting_accuracy,
+                'confidence': 0.5,
+                'feedback': {
+                    'level': 'collecting',
+                    'message': f'"{target_sign}" 동작을 수집 중입니다... ({buffer_size}/{min_frames})',
+                    'suggestions': [
+                        '천천히 동작을 계속하세요',
+                        '손을 카메라에 잘 보이게 유지하세요'
+                    ],
+                    'color': 'blue',
+                    'score': '-'
+                },
+                'hand_detected': True,
+                'target_sign': target_sign,
+                'predicted_sign': None,
+                'is_correct': False,
+                'language': language,
+                'model_type': 'sequence',
+                'buffer_size': buffer_size,
+                'collecting': True
+            }
+        
+        # 5. 시퀀스 패딩 및 정규화
+        feature_dim = len(frame_features)
+        seq_array = np.zeros((1, seq_max_timesteps, feature_dim), dtype=np.float32)
+        seq_len = len(user_buffer['buffer'])
+        seq_array[0, :seq_len, :] = list(user_buffer['buffer'])
+        
+        # 정규화 적용
+        if seq_norm_mean is not None and seq_norm_std is not None:
+            seq_array = (seq_array - seq_norm_mean) / seq_norm_std
+            print(f"✅ 정규화 적용 완료")
+        else:
+            print("⚠️ 정규화 통계 없음 - 정규화 없이 예측")
+        
+        # 6. AI 모델 예측
+        prediction = ksl_seq_model.predict(seq_array, verbose=0)
+        
+        # 7. 결과 분석
+        predicted_idx = np.argmax(prediction)
+        confidence_score = float(np.max(prediction))
+        
+        if 0 <= predicted_idx < len(labels_ksl_seq):
+            predicted_sign = labels_ksl_seq[predicted_idx]
+        else:
+            predicted_sign = "UNKNOWN"
+        
+        # 8. 정확도 계산
+        is_correct = predicted_sign == target_sign
+        
+        # 복합모음은 더 관대하게 처리 (학습 난이도 조정)
+        if is_correct:
+            accuracy = min(100, confidence_score * 100 + 10)  # 보너스 10%
+        else:
+            # 틀렸어도 손이 감지되면 부분 점수
+            accuracy = max(60, confidence_score * 70)  # 최소 60%
+        
+        # 9. 피드백 생성
+        feedback = generate_detailed_feedback(accuracy, target_sign, language)
+        
+        # 복합모음 특별 메시지
+        if not is_correct and accuracy >= 60:
+            feedback['message'] = f'"{target_sign}" 동작을 연습 중이에요! 계속 해보세요 💪'
+            feedback['suggestions'] = [
+                f'예측: {predicted_sign} (목표: {target_sign})',
+                '천천히 정확하게 동작하세요',
+                '여러 번 연습하면 더 좋아질 거예요'
+            ]
+        
+        return {
+            'accuracy': round(accuracy, 1),
+            'confidence': round(confidence_score, 2),
+            'feedback': feedback,
+            'hand_detected': True,
+            'target_sign': target_sign,
+            'predicted_sign': predicted_sign,
+            'is_correct': is_correct,
+            'language': language,
+            'model_type': 'sequence',
+            'buffer_size': buffer_size,
+            'lenient_mode': True  # 관대한 모드 플래그
+        }
+        
+    except Exception as e:
+        print(f"❌ 시퀀스 분석 중 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # 에러 정보를 포함한 fallback
+        fallback_result = fallback_analysis(target_sign, language)
+        fallback_result['error'] = str(e)
+        fallback_result['error_type'] = 'sequence_analysis_error'
+        return fallback_result
+
+def analyze_static_sign(image_data, target_sign, language):
+    """정적 모델을 사용한 수어 분석 (기본 자음/모음)"""
     
     try:
         # 1. 이미지 디코딩
@@ -399,7 +704,7 @@ def recognize_sign_from_image(image_data, language):
 @recognition_bp.route('/api/recognition/analyze-hand', methods=['POST'])
 @jwt_required()
 def analyze_hand_shape():
-    """손모양 분석 및 정확도 측정"""
+    """손모양 분석 및 정확도 측정 (하이브리드)"""
     try:
         user_id = get_jwt_identity()
         data = request.get_json()
@@ -410,41 +715,127 @@ def analyze_hand_shape():
             if not data.get(field):
                 return jsonify({'error': f'{field}는 필수입니다.'}), 400
         
-        # 손모양 분석 수행
+        target_sign = data['target_sign']
+        language = data['language']
+        
+        # 이미지 데이터 가져오기 (프론트엔드에서 보내거나, 캐시에서 가져오기)
+        image_data = data.get('image_data', '')
+        
+        # 이미지 데이터가 없으면 현재 프레임 캐시에서 가져오기
+        if not image_data:
+            from app import current_frame_cache
+            import base64
+            
+            if language in current_frame_cache:
+                frame = current_frame_cache[language]
+                # OpenCV 이미지를 base64로 인코딩
+                _, buffer = cv2.imencode('.jpg', frame)
+                image_data = 'data:image/jpeg;base64,' + base64.b64encode(buffer).decode('utf-8')
+                print(f"📸 캐시된 프레임 사용: {frame.shape}")
+            else:
+                print(f"⚠️ 캐시된 프레임 없음 (language={language})")
+        
+        # 손모양 분석 수행 (하이브리드)
         analysis_result = analyze_sign_accuracy(
-            data.get('image_data', ''),
-            data['target_sign'],
-            data['language']
+            image_data,
+            target_sign,
+            language,
+            user_id=user_id
         )
+        
+        # 모델 타입 결정
+        model_type = 'sequence' if target_sign in SEQUENCE_SIGNS else 'static'
         
         return jsonify({
             'analysis': analysis_result,
             'message': '손모양 분석이 완료되었습니다.',
-            'model_type': 'H5'
+            'model_type': model_type,
+            'is_sequence_sign': target_sign in SEQUENCE_SIGNS
         }), 200
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 # ===== 모델 상태 확인 API =====
 
 @recognition_bp.route('/api/recognition/model-status', methods=['GET'])
 def get_model_status():
-    """AI 모델 상태 확인"""
+    """AI 모델 상태 확인 (하이브리드)"""
     try:
-        status = {
-            'model_initialized': model_initialized,
-            'ksl_model_available': ksl_model is not None,
-            'mediapipe_available': hands is not None,
-            'model_path': KSL_MODEL_PATH,
-            'model_type': 'H5 (Keras)',
-            'labels_count': len(labels_ksl) if labels_ksl is not None else 0
+        # 파일 존재 여부 확인
+        files_exist = {
+            'ksl_model.h5': os.path.exists(KSL_MODEL_PATH),
+            'ksl_labels.npy': os.path.exists(KSL_LABELS_PATH),
+            'ksl_model_sequence.h5': os.path.exists(KSL_SEQ_MODEL_PATH),
+            'ksl_labels_sequence.npy': os.path.exists(KSL_SEQ_LABELS_PATH),
+            'ksl_sequence_config.npy': os.path.exists(KSL_SEQ_CONFIG_PATH)
         }
         
-        if labels_ksl is not None:
-            status['available_signs'] = labels_ksl.tolist()
+        status = {
+            'model_initialized': model_initialized,
+            'hybrid_mode': True,
+            'mediapipe_available': hands is not None,
+            'files_exist': files_exist,
+            
+            # 정적 모델
+            'static_model': {
+                'available': ksl_model is not None,
+                'path': KSL_MODEL_PATH,
+                'labels_count': len(labels_ksl) if labels_ksl is not None else 0,
+                'labels': labels_ksl.tolist() if labels_ksl is not None else []
+            },
+            
+            # 시퀀스 모델
+            'sequence_model': {
+                'available': ksl_seq_model is not None,
+                'path': KSL_SEQ_MODEL_PATH,
+                'labels_count': len(labels_ksl_seq) if labels_ksl_seq is not None else 0,
+                'labels': labels_ksl_seq.tolist() if labels_ksl_seq is not None else [],
+                'max_timesteps': seq_max_timesteps
+            },
+            
+            'sequence_signs': SEQUENCE_SIGNS,
+            
+            # 디버깅 정보
+            'debug': {
+                'base_dir': BASE_DIR,
+                'model_dir': MODEL_DIR,
+                'seq_model_loaded': ksl_seq_model is not None,
+                'seq_labels_loaded': labels_ksl_seq is not None,
+                'seq_config_loaded': seq_max_timesteps is not None
+            }
+        }
         
         return jsonify(status), 200
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+@recognition_bp.route('/api/recognition/clear-buffer', methods=['POST'])
+@jwt_required()
+def clear_sequence_buffer():
+    """시퀀스 버퍼 초기화"""
+    try:
+        user_id = get_jwt_identity()
+        
+        if user_id in sequence_buffers:
+            sequence_buffers[user_id]['buffer'].clear()
+            sequence_buffers[user_id]['prev_xy'].clear()
+            return jsonify({
+                'message': '시퀀스 버퍼가 초기화되었습니다.',
+                'user_id': user_id
+            }), 200
+        else:
+            return jsonify({
+                'message': '초기화할 버퍼가 없습니다.',
+                'user_id': user_id
+            }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -93,8 +93,12 @@ DOUBLE_CONSONANT_MAP = {
 
 
 
+# ==== 현재 프레임 저장용 전역 변수 ====
+current_frame_cache = {}  # {lang_key: frame}
+
 # ==== 공통 영상 스트리밍 (H5 모델용) ====
 def generate_frames(model, labels, lang_key, camera_device=0):
+    global current_frame_cache
     # 카메라 열기 (macOS 호환성 개선)
     print(f"📷 카메라 {camera_device}번 열기 시도...")
     cap = cv2.VideoCapture(camera_device)
@@ -120,10 +124,11 @@ def generate_frames(model, labels, lang_key, camera_device=0):
     print(f"📷 카메라 설정 완료: {actual_width}x{actual_height} @ {actual_fps}fps")
 
     last_prediction_time = 0
-    prediction_interval = 0.4  # 0.4초마다 인식 (안정성 우선)
+    prediction_interval = 0.15  # 0.15초마다 인식 (빠른 응답)
     prev_idx = -1
     consecutive_same = 0  # 연속 같은 결과 카운트
     last_predicted_char = ""
+    confidence_threshold = 0.6  # 신뢰도 임계값 상향
     
     # MediaPipe 항상 활성화 (성능 최적화)
     print("🚀 MediaPipe 항상 활성화 모드")
@@ -141,6 +146,9 @@ def generate_frames(model, labels, lang_key, camera_device=0):
             image = cv2.flip(frame, 1)  # 좌우 반전
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             current_time = time.time()
+            
+            # 현재 프레임을 캐시에 저장 (API에서 사용)
+            current_frame_cache[lang_key] = image.copy()
 
             # MediaPipe 항상 활성화
             result = hands.process(rgb_image)
@@ -157,52 +165,35 @@ def generate_frames(model, labels, lang_key, camera_device=0):
                         idx = np.argmax(prediction)
                         confidence = float(np.max(prediction))
 
-                        # 신뢰도 임계값 (쌍자음 인식 개선)
-                        min_confidence = 0.4  # 적당한 신뢰도로 조정
-                        if 0 <= idx < len(labels) and confidence > min_confidence:
+                        # 신뢰도 임계값
+                        if 0 <= idx < len(labels) and confidence > confidence_threshold:
                             predicted_char = labels[idx]
                             
-                            # 연속 같은 결과 확인 (안정성 향상)
-                            if predicted_char == last_predicted_char:
-                                consecutive_same += 1
-                            else:
-                                consecutive_same = 1
-                                last_predicted_char = predicted_char
+                            # 즉시 업데이트 (빠른 응답)
+                            latest_char[lang_key] = predicted_char
+                            current_time_sec = time.time()
+                            time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
                             
-                            # 2번 연속 같은 결과일 때 업데이트 (쌍자음 인식 최적화)
-                            if consecutive_same >= 2:
-                                current_time_sec = time.time()
-                                time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
+                            # 쌍자음 처리 로직
+                            if (predicted_char in DOUBLE_CONSONANT_MAP and 
+                                predicted_char == last_recognized_char.get(lang_key, '') and 
+                                0.5 < time_diff < 3.0):
                                 
-                                # 쌍자음 처리 로직 (개선)
-                                # 조건: 같은 자음을 0.5~3초 간격으로 두 번 인식
-                                if (predicted_char in DOUBLE_CONSONANT_MAP and 
-                                    predicted_char == last_recognized_char.get(lang_key, '') and 
-                                    0.5 < time_diff < 3.0):
-                                    
-                                    # 쌍자음으로 변환
-                                    double_char = DOUBLE_CONSONANT_MAP[predicted_char]
-                                    latest_char[lang_key] = double_char
-                                    print(f"🎯🎯 쌍자음 완성: {predicted_char} + {predicted_char} → {double_char} (간격: {time_diff:.1f}초)")
-                                    
-                                    # 쌍자음 완성 후 초기화
-                                    last_recognized_char[lang_key] = ""
-                                    last_recognized_time[lang_key] = 0
-                                    
-                                else:
-                                    # 단일 자음으로 인식
-                                    latest_char[lang_key] = predicted_char
-                                    
-                                    # 쌍자음 가능 문자 표시
-                                    if predicted_char in DOUBLE_CONSONANT_MAP:
-                                        remaining_time = 3.0 - time_diff if time_diff > 0 else 3.0
-                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f}) → 다시 인식하면 {DOUBLE_CONSONANT_MAP[predicted_char]} (남은시간: {remaining_time:.1f}초)")
-                                    else:
-                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
-                                    
-                                    # 쌍자음 대기 정보 저장
-                                    last_recognized_char[lang_key] = predicted_char
-                                    last_recognized_time[lang_key] = current_time_sec
+                                # 쌍자음으로 변환
+                                double_char = DOUBLE_CONSONANT_MAP[predicted_char]
+                                latest_char[lang_key] = double_char
+                                print(f"🎯🎯 쌍자음: {predicted_char} + {predicted_char} → {double_char}")
+                                
+                                # 초기화
+                                last_recognized_char[lang_key] = ""
+                                last_recognized_time[lang_key] = 0
+                            else:
+                                # 일반 인식
+                                print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
+                                
+                                # 쌍자음 대기 정보 저장
+                                last_recognized_char[lang_key] = predicted_char
+                                last_recognized_time[lang_key] = current_time_sec
                         else:
                             latest_char[lang_key] = ""
                             consecutive_same = 0
