@@ -738,10 +738,29 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     });
 
     try {
+      // 학습 목표 문자 가져오기
+      final targetCharacter = getCurrentLearningCharacter();
+      
+      // 복합모음/쌍자음 리스트
+      const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+      
+      // 복합모음/쌍자음인 경우 목표 문자를 그대로 사용
+      final targetSign = sequenceSigns.contains(targetCharacter) 
+          ? targetCharacter 
+          : currentRecognition;
+      
+      print('🔍 손모양 분석 시작: $targetSign (목표: $targetCharacter, 인식: $currentRecognition)');
+      
+      // 현재 카메라 프레임 캡처 (서버 스트림 모드에서는 불가능하므로 null)
+      String? imageData;
+      // TODO: 카메라 컨트롤러에서 이미지 캡처 구현 필요
+      // 현재는 서버 스트림 모드라 직접 캡처 불가
+      
       final result = await RecognitionService.analyzeHandShape(
-        targetSign: currentRecognition,
+        targetSign: targetSign,
         language: 'ksl',
         sessionId: currentSessionId,
+        imageData: imageData, // 이미지 데이터 전달
       );
 
       if (result['success']) {
@@ -876,7 +895,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 학습 진도 체크 및 업데이트
   void _checkLearningProgress() {
-    if (!isLearningMode || currentRecognition.isEmpty) return;
+    if (!isLearningMode) return;
 
     // 쿨다운 체크 (3초 이내 중복 처리 방지)
     if (lastProgressUpdate != null &&
@@ -885,10 +904,40 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     }
 
     String currentTarget = getCurrentLearningCharacter();
+    
+    // 복합모음/쌍자음 리스트
+    const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+    
+    // 복합모음/쌍자음인 경우 손모양 분석 결과로 판단
+    bool isCorrect = false;
+    
+    if (sequenceSigns.contains(currentTarget)) {
+      // 복합모음/쌍자음: 백엔드 분석 결과로 판단
+      if (handAnalysis != null) {
+        String? predictedSign = handAnalysis!['predicted_sign'];
+        bool? isCorrectPrediction = handAnalysis!['is_correct'];
+        double? accuracy = handAnalysis!['accuracy'] != null 
+            ? (handAnalysis!['accuracy'] as num).toDouble() 
+            : null;
+        
+        // 조건 1: 백엔드가 정답으로 예측 + 정확도 70% 이상
+        // 조건 2: 정확도 85% 이상 (임시 통과 모드)
+        if ((isCorrectPrediction == true && accuracy != null && accuracy >= 70.0) ||
+            (accuracy != null && accuracy >= 85.0)) {
+          isCorrect = true;
+          print('✅ 복합모음/쌍자음 통과: $currentTarget (예측: $predictedSign, 정확도: ${accuracy.toStringAsFixed(1)}%)');
+        } else {
+          print('❌ 복합모음/쌍자음 미통과: $currentTarget (예측: $predictedSign, 정확도: ${accuracy?.toStringAsFixed(1) ?? "N/A"}%)');
+        }
+      }
+    } else {
+      // 일반 자음/모음: 정확한 인식 필요
+      if (currentRecognition.isEmpty) return;
+      isCorrect = currentRecognition == currentTarget && currentRecognition.trim().isNotEmpty;
+    }
 
     // 정답 체크
-    if (currentRecognition == currentTarget &&
-        currentRecognition.trim().isNotEmpty) {
+    if (isCorrect) {
       // 마지막 업데이트 시간 기록
       lastProgressUpdate = DateTime.now();
 
@@ -903,6 +952,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       // 인식 결과 초기화 (중복 처리 방지)
       setState(() {
         currentRecognition = '';
+        handAnalysis = null; // 분석 결과도 초기화
       });
     }
   }

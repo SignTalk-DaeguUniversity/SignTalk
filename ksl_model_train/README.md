@@ -9,12 +9,20 @@
 <h2>KSL 모델 파이프라인 (데이터 수집 → 학습 → 변환 → 추론)</h2>
 
 <h3>구성 파일</h3>
+<h4>기본 자음/모음 (정적 모델)</h4>
 <ul>
 <li><code>hand_capture.py</code> : 카메라로 손 랜드마크를 캡처하여 CSV 저장</li>
 <li><code>train_model.py</code> : CSV 학습, 라벨 저장(<code>ksl_labels.npy</code>), 정규화 통계 저장(<code>ksl_norm_mean.npy</code>, <code>ksl_norm_std.npy</code>)</li>
 <li><code>predict_real.py</code> : Keras 모델(.h5) 기반 실시간 인식 (PC)</li>
 <li><code>export_tflite.py</code> : TFLite 변환(FP32/INT8)</li>
 <li><code>predict_tflite.py</code> : TFLite 기반 실시간 인식 (Raspberry Pi 3)</li>
+</ul>
+
+<h4>쌍자음/복합모음 (시퀀스 모델 - LSTM)</h4>
+<ul>
+<li><code>capture_sequence.py</code> : 시퀀스 데이터 수집 (0.5~0.8초 클립)</li>
+<li><code>train_sequence_model.py</code> : LSTM 모델 학습 (쌍자음: ㄲ,ㄸ,ㅃ,ㅆ,ㅉ / 복합모음: ㅘ,ㅙ,ㅝ,ㅞ 등)</li>
+<li><code>predict_sequence.py</code> : 실시간 시퀀스 인식</li>
 </ul>
 
 <h3>1) 데이터 수집</h3>
@@ -70,9 +78,40 @@ model/ksl_norm_std.npy
 </li>
 </ol>
 
+<h3>6) 쌍자음/복합모음 시퀀스 데이터 수집</h3>
+<pre><code>python capture_sequence.py
+</code></pre>
+<ul>
+<li>라벨 입력 (예: ㄲ, ㄸ, ㅘ, ㅙ 등)</li>
+<li>SPACE: 0.5~0.8초 클립 캡처</li>
+<li>ESC: 종료</li>
+<li>데이터는 <code>data_seq/라벨명/</code> 폴더에 저장</li>
+<li><strong>권장:</strong> 각 라벨당 20~50개 시퀀스</li>
+</ul>
+
+<h3>7) 시퀀스 모델 학습 (LSTM)</h3>
+<pre><code>python train_sequence_model.py
+</code></pre>
+<ul>
+<li>입력: <code>data_seq/</code> 내 모든 시퀀스 CSV</li>
+<li>출력: <code>model/ksl_sequence_model.h5</code>, <code>model/ksl_seq_labels.npy</code>, 정규화 통계 등</li>
+<li>모델: Bidirectional LSTM (64→32) + Dense</li>
+</ul>
+
+<h3>8) 실시간 시퀀스 인식</h3>
+<pre><code>python predict_sequence.py
+</code></pre>
+<ul>
+<li>쌍자음/복합모음 실시간 인식</li>
+<li>SPACE: 버퍼 초기화</li>
+<li>ESC: 종료</li>
+</ul>
+
 <h3>라벨 관리 팁</h3>
 <ul>
-<li>CSV 파일명(또는 마지막 컬럼의 값)이 라벨로 사용됩니다.</li>
-<li><code>model/ksl_labels.npy</code>의 순서가 최종 클래스 인덱스 순서입니다.</li>
+<li><strong>정적 모델:</strong> CSV 파일명(또는 마지막 컬럼의 값)이 라벨로 사용됩니다.</li>
+<li><strong>시퀀스 모델:</strong> <code>data_seq/</code> 내 폴더명이 라벨로 사용됩니다.</li>
+<li><code>model/ksl_labels.npy</code>: 정적 모델 라벨 순서</li>
+<li><code>model/ksl_seq_labels.npy</code>: 시퀀스 모델 라벨 순서</li>
 <li>라벨 추가/변경 시, 수집 → 재학습 → 재변환 과정을 수행하세요.</li>
 </ul>

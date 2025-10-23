@@ -1,10 +1,16 @@
+import sys
+import os
+
+# Python 캐시 비활성화 
+sys.dont_write_bytecode = True
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+
 from flask import Flask, Response, jsonify, request
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
 import tensorflow as tf
-import os
 from datetime import datetime
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -13,7 +19,7 @@ from auth.models import db
 from auth.routes import auth_bp, bcrypt
 from api.progress import progress_bp
 from api.learning import learning_bp
-from api.recognition import recognition_bp
+from api.recognition import recognition_bp, ksl_model, labels_ksl, hands, mp_hands
 from api.quiz import quiz_bp
 from api.jamo_decompose import jamo_decompose_bp
 from api.jamo_compose import jamo_compose_bp
@@ -47,33 +53,10 @@ app.register_blueprint(quiz_bp)
 app.register_blueprint(jamo_decompose_bp)
 app.register_blueprint(jamo_compose_bp)
 
-# ==== 경로 설정 ====
-BASE_DIR = os.path.dirname(__file__)
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+# ==== 모델은 recognition.py에서 초기화됨 ====
+# initialize_ai_models()가 자동으로 호출됨
 
-KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.h5")
-KSL_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels.npy")
-
-# ==== 모델 로딩 (H5 모델) ====
-try:
-    ksl_model = tf.keras.models.load_model(KSL_MODEL_PATH)
-    labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
-
-    print("✅ KSL H5 모델 및 라벨 로딩 성공")
-    print(f"   - 모델 경로: {KSL_MODEL_PATH}")
-    print(f"   - 라벨 개수: {len(labels_ksl)}")
-except Exception as e:
-    print(f"❌ 모델 로딩 실패: {e}")
-    print("📱 API 서버만 실행됩니다 (수어 인식 기능 비활성화)")
-    ksl_model = None
-
-# ==== Mediapipe 설정 ====
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5)
+# MediaPipe 그리기 유틸리티
 mp_draw = mp.solutions.drawing_utils
 
 # ==== 인식 결과 저장 ====
@@ -161,6 +144,12 @@ def generate_frames(model, labels, lang_key, camera_device=0):
                     if current_time - last_prediction_time >= prediction_interval:
                         coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
                         input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                        
+                        # 정규화 적용 (recognition.py와 동일)
+                        from api.recognition import ksl_norm_mean, ksl_norm_std
+                        if ksl_norm_mean is not None and ksl_norm_std is not None:
+                            input_data = (input_data - ksl_norm_mean) / ksl_norm_std
+                        
                         prediction = model.predict(input_data, verbose=0)
                         idx = np.argmax(prediction)
                         confidence = float(np.max(prediction))
@@ -451,6 +440,11 @@ def process_uploaded_image(image, lang):
                 # 좌표 추출
                 coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
                 input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                
+                # 정규화 적용
+                from api.recognition import ksl_norm_mean, ksl_norm_std
+                if ksl_norm_mean is not None and ksl_norm_std is not None:
+                    input_data = (input_data - ksl_norm_mean) / ksl_norm_std
                 
                 # 모델 추론 (H5 모델)
                 prediction = model.predict(input_data, verbose=0)

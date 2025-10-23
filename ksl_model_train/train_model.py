@@ -49,12 +49,60 @@ print(f"\nTotal samples loaded: {len(X)}")
 print(f"Unique labels before encoding: {np.unique(y)}")
 
 X = np.array(X, dtype=np.float32)
+y = np.array(y)
+
+print(f"\n✅ 원본 데이터: {len(X)}개")
+
+# === 데이터 증강: 혼동되는 자모 강화 ===
+print("\n🔄 데이터 증강 시작...")
+# 성능 분석 결과 기반으로 혼동되는 자모 선정
+confused_chars = ['ㄹ', 'ㅕ', 'ㅗ', 'ㅜ', 'ㅡ', 'ㅣ', 'ㅔ', 'ㅐ', 'ㄷ', 'ㅌ']
+augment_factor = 5  # 5배 증강
+
+X_aug = []
+y_aug = []
+
+for i, label in enumerate(y):
+    X_aug.append(X[i])
+    y_aug.append(label)
+    
+    # 혼동되는 자모 증강
+    if label in confused_chars:
+        for j in range(augment_factor - 1):
+            # 다양한 증강 기법 적용
+            aug_data = X[i].copy()
+            
+            # 1. 노이즈 추가
+            noise = np.random.normal(0, 0.01, aug_data.shape)
+            aug_data = aug_data + noise
+            
+            # 2. 스케일 변경 (손 크기 변화)
+            scale = np.random.uniform(0.95, 1.05)
+            aug_data = aug_data * scale
+            
+            # 3. 약간의 회전 효과 (좌표 변환)
+            if j % 2 == 0:
+                angle = np.random.uniform(-0.05, 0.05)
+                # 간단한 회전 근사
+                aug_data = aug_data + np.random.normal(0, 0.008, aug_data.shape)
+            
+            X_aug.append(aug_data)
+            y_aug.append(label)
+
+X = np.array(X_aug, dtype=np.float32)
+y = np.array(y_aug)
+
+print(f"✅ 증강 후 데이터: {len(X)}개")
+for char in confused_chars:
+    count = sum(y == char)
+    print(f"   {char}: {count}개")
+
 le = LabelEncoder()
 y_encoded = le.fit_transform(y)
 y_cat = to_categorical(y_encoded)
 
 labels_original_order = le.classes_
-print(f"Label classes: {labels_original_order}")
+print(f"\nLabel classes: {labels_original_order}")
 print(f"Number of classes: {len(labels_original_order)}")
 
 if len(X) > 1:
@@ -85,29 +133,35 @@ print("Saved normalization stats to model/ (ksl_norm_mean.npy, ksl_norm_std.npy)
 
 # === Model: Enhanced architecture for better accuracy ===
 model = Sequential([
-    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
+    Dense(256, activation='relu', input_shape=(X_train.shape[1],)),
+    Dropout(0.4),
+    Dense(128, activation='relu'),
     Dropout(0.3),
     Dense(64, activation='relu'),
-    Dropout(0.2),
+    Dropout(0.3),
     Dense(32, activation='relu'),
     Dropout(0.2),
     Dense(y_cat.shape[1], activation='softmax')
 ])
-model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
+# 학습률 조정
+from tensorflow.keras.optimizers import Adam
+optimizer = Adam(learning_rate=0.001)
+model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+
+early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
 
 if X_val is not None and y_val_cat is not None:
     history = model.fit(
         X_train, y_train_cat,
-        epochs=100,
-        batch_size=32,
+        epochs=150,
+        batch_size=64,
         validation_data=(X_val, y_val_cat),
         callbacks=[early_stopping],
         verbose=1,
     )
 else:
-    history = model.fit(X_train, y_train_cat, epochs=100, batch_size=32, verbose=1)
+    history = model.fit(X_train, y_train_cat, epochs=150, batch_size=64, verbose=1)
 
 # === 모델 저장 ===
 model.save(os.path.join(output_model_dir, "ksl_model.h5"))

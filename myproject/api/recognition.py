@@ -37,6 +37,8 @@ MODEL_DIR = os.path.join(BASE_DIR, "model")
 # 정적 모델 (기본 자음/모음)
 KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.h5")
 KSL_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels.npy")
+KSL_NORM_MEAN_PATH = os.path.join(MODEL_DIR, "ksl_norm_mean.npy")
+KSL_NORM_STD_PATH = os.path.join(MODEL_DIR, "ksl_norm_std.npy")
 
 # 시퀀스 모델 (쌍자음/복합모음)
 KSL_SEQ_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model_sequence.h5")
@@ -48,6 +50,8 @@ KSL_SEQ_NORM_STD_PATH = os.path.join(MODEL_DIR, "ksl_seq_norm_std.npy")
 # 전역 모델 변수
 ksl_model = None  # 정적 모델
 labels_ksl = None  # 정적 라벨
+ksl_norm_mean = None  # 정적 모델 정규화 평균
+ksl_norm_std = None  # 정적 모델 정규화 표준편차
 ksl_seq_model = None  # 시퀀스 모델
 labels_ksl_seq = None  # 시퀀스 라벨
 seq_max_timesteps = None  # 시퀀스 최대 프레임 수
@@ -62,13 +66,21 @@ sequence_buffers = {}  # {user_id: deque}
 
 def initialize_ai_models():
     """AI 모델 초기화 (하이브리드: 정적 + 시퀀스)"""
-    global ksl_model, labels_ksl, ksl_seq_model, labels_ksl_seq, seq_max_timesteps, seq_norm_mean, seq_norm_std, mp_hands, hands
+    global ksl_model, labels_ksl, ksl_norm_mean, ksl_norm_std, ksl_seq_model, labels_ksl_seq, seq_max_timesteps, seq_norm_mean, seq_norm_std, mp_hands, hands
     
     try:
         # 1. 정적 모델 로딩 (기본 자음/모음)
         ksl_model = tf.keras.models.load_model(KSL_MODEL_PATH)
         labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
-        print(f"✅ 정적 모델 로드 성공: {len(labels_ksl)}개 라벨")
+        
+        # 정규화 통계 로드 (정적 모델용)
+        if os.path.exists(KSL_NORM_MEAN_PATH) and os.path.exists(KSL_NORM_STD_PATH):
+            ksl_norm_mean = np.load(KSL_NORM_MEAN_PATH)
+            ksl_norm_std = np.load(KSL_NORM_STD_PATH)
+            print(f"✅ 정적 모델 로드 성공: {len(labels_ksl)}개 라벨 (정규화 적용)")
+        else:
+            print(f"⚠️ 정규화 파일 없음 - 정적 모델 정확도가 낮을 수 있습니다!")
+            print(f"✅ 정적 모델 로드 성공: {len(labels_ksl)}개 라벨 (정규화 없음)")
         
         # 2. 시퀀스 모델 로딩 (쌍자음/복합모음)
         if os.path.exists(KSL_SEQ_MODEL_PATH):
@@ -439,11 +451,15 @@ def analyze_static_sign(image_data, target_sign, language):
         for landmark in hand_landmarks.landmark:
             coords.extend([landmark.x, landmark.y])
         
-        # 5. AI 모델 예측 (H5 모델)
+        # 5. 정규화 적용 (학습 시와 동일하게)
         input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+        if ksl_norm_mean is not None and ksl_norm_std is not None:
+            input_data = (input_data - ksl_norm_mean) / ksl_norm_std
+        
+        # 6. AI 모델 예측 (H5 모델)
         prediction = ksl_model.predict(input_data, verbose=0)
         
-        # 6. 결과 분석
+        # 7. 결과 분석
         predicted_idx = np.argmax(prediction)
         confidence_score = float(np.max(prediction))
         
@@ -452,7 +468,7 @@ def analyze_static_sign(image_data, target_sign, language):
         else:
             predicted_sign = "UNKNOWN"
         
-        # 7. 쌍자음 처리 로직
+        # 8. 쌍자음 처리 로직
         # 목표가 쌍자음이고, 예측이 기본 자음인 경우 처리
         is_double_consonant_target = target_sign in DOUBLE_CONSONANT_MAP.values()
         base_consonant = None
@@ -491,11 +507,11 @@ def analyze_static_sign(image_data, target_sign, language):
                     'language': language
                 }
         
-        # 8. 정확도 계산 (일반 케이스)
+        # 9. 정확도 계산 (일반 케이스)
         is_correct = predicted_sign == target_sign
         accuracy = confidence_score * 100 if is_correct else max(0, confidence_score * 50)
         
-        # 9. 피드백 생성
+        # 10. 피드백 생성
         feedback = generate_detailed_feedback(accuracy, target_sign, language)
         
         return {
@@ -670,11 +686,15 @@ def recognize_sign_from_image(image_data, language):
         for landmark in hand_landmarks.landmark:
             coords.extend([landmark.x, landmark.y])
         
-        # 5. AI 모델 예측 (H5 모델)
+        # 5. 정규화 적용 (학습 시와 동일하게)
         input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+        if ksl_norm_mean is not None and ksl_norm_std is not None:
+            input_data = (input_data - ksl_norm_mean) / ksl_norm_std
+        
+        # 6. AI 모델 예측 (H5 모델)
         prediction = ksl_model.predict(input_data, verbose=0)
         
-        # 6. 결과 분석
+        # 7. 결과 분석
         predicted_idx = np.argmax(prediction)
         confidence_score = float(np.max(prediction))
         
@@ -721,19 +741,38 @@ def analyze_hand_shape():
         # 이미지 데이터 가져오기 (프론트엔드에서 보내거나, 캐시에서 가져오기)
         image_data = data.get('image_data', '')
         
-        # 이미지 데이터가 없으면 현재 프레임 캐시에서 가져오기
+        # 이미지 데이터가 없으면 최근 인식 결과 사용
         if not image_data:
-            from app import current_frame_cache
-            import base64
+            from app import latest_char
             
-            if language in current_frame_cache:
-                frame = current_frame_cache[language]
-                # OpenCV 이미지를 base64로 인코딩
-                _, buffer = cv2.imencode('.jpg', frame)
-                image_data = 'data:image/jpeg;base64,' + base64.b64encode(buffer).decode('utf-8')
-                print(f"📸 캐시된 프레임 사용: {frame.shape}")
+            # 최근 인식된 문자 가져오기
+            recognized_sign = latest_char.get(language, '')
+            
+            if recognized_sign:
+                print(f"📊 최근 인식 결과 사용: {recognized_sign}")
+                
+                # 최근 인식 결과 기반으로 피드백 생성
+                is_correct = recognized_sign == target_sign
+                accuracy = 85.0 if is_correct else 60.0
+                confidence = 0.85 if is_correct else 0.60
+                
+                return jsonify({
+                    'analysis': {
+                        'accuracy': accuracy,
+                        'confidence': confidence,
+                        'feedback': generate_detailed_feedback(accuracy, target_sign, language),
+                        'hand_detected': True,
+                        'target_sign': target_sign,
+                        'predicted_sign': recognized_sign,
+                        'is_correct': is_correct,
+                        'language': language,
+                        'model_type': 'cached_result'
+                    },
+                    'message': '최근 인식 결과 기반 분석 완료',
+                    'model_type': 'cached_result'
+                }), 200
             else:
-                print(f"⚠️ 캐시된 프레임 없음 (language={language})")
+                print(f"⚠️ 최근 인식 결과 없음 (language={language})")
         
         # 손모양 분석 수행 (하이브리드)
         analysis_result = analyze_sign_accuracy(
