@@ -777,6 +777,67 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     }
   }
 
+  // 퀴즈 모드용 손모양 분석 및 정답 체크
+  Future<void> _analyzeHandShapeForQuiz() async {
+    if (!isQuizStarted || currentRecognition.isEmpty) return;
+
+    try {
+      // 현재 문제 가져오기
+      final currentQuestion = _getCurrentQuestion();
+      if (currentQuestion == null) return;
+
+      final targetSign = currentQuestion['question'] ?? '';
+      if (targetSign.isEmpty) return;
+
+      // 복합모음/쌍자음 리스트
+      const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+
+      // 시퀀스 사인인 경우 백엔드 분석 필요
+      if (sequenceSigns.contains(targetSign)) {
+        final result = await RecognitionService.analyzeHandShape(
+          targetSign: targetSign,
+          language: 'ksl',
+          imageData: null,
+        );
+
+        if (result['success']) {
+          final analysis = result['analysis'];
+          final isCorrect = analysis['is_correct'] == true;
+          final accuracy = analysis['accuracy'] ?? 0.0;
+
+          // 정답 조건: 정확도 80% 이상
+          if (isCorrect && accuracy >= 80.0) {
+            _handleCorrectAnswer();
+          }
+        }
+      } else {
+        // 일반 자모: 정적 모델 인식 결과로 판단
+        if (currentRecognition == targetSign) {
+          _handleCorrectAnswer();
+        }
+      }
+    } catch (e) {
+      print('퀴즈 손모양 분석 실패: $e');
+    }
+  }
+
+  // 정답 처리
+  void _handleCorrectAnswer() {
+    if (showCorrectAnswer) return; // 이미 정답 처리됨
+
+    setState(() {
+      showCorrectAnswer = true;
+      isAnswerCorrect = true;
+      correctAnswers++;
+    });
+
+    // 2초 후 다음 문제로
+    _correctAnswerTimer?.cancel();
+    _correctAnswerTimer = Timer(const Duration(seconds: 2), () {
+      _nextQuestion();
+    });
+  }
+
   // 학습 세션 시작
   Future<void> _startLearningSession() async {
     if (!isLearningMode) return;
@@ -920,10 +981,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
             ? (handAnalysis!['accuracy'] as num).toDouble() 
             : null;
         
-        // 조건 1: 백엔드가 정답으로 예측 + 정확도 70% 이상
-        // 조건 2: 정확도 85% 이상 (임시 통과 모드)
-        if ((isCorrectPrediction == true && accuracy != null && accuracy >= 70.0) ||
-            (accuracy != null && accuracy >= 85.0)) {
+        // 조건: 백엔드가 정답으로 예측 + 정확도 80% 이상
+        if (isCorrectPrediction == true && accuracy != null && accuracy >= 80.0) {
           isCorrect = true;
           print('✅ 복합모음/쌍자음 통과: $currentTarget (예측: $predictedSign, 정확도: ${accuracy.toStringAsFixed(1)}%)');
         } else {
@@ -1072,6 +1131,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       final nextCharacter = getCurrentLearningCharacter();
       print('다음 학습 문자: $nextCharacter');
 
+      // 쌍자음/복합모음 리스트
+      const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+      
+      // 다음 문자가 쌍자음/복합모음이면 버퍼 초기화
+      if (sequenceSigns.contains(nextCharacter)) {
+        print('🔄 스킵 후 다음 문자가 시퀀스 사인 → 버퍼 초기화: $nextCharacter');
+        RecognitionService.clearSequenceBuffer();
+      }
+
       if (nextCharacter == '완료') {
         // 모든 학습 완료 시 축하 다이얼로그 표시
         _showAllLevelsCompletedDialog();
@@ -1113,6 +1181,15 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       // 다음 학습 문자 계산
       final nextCharacter = getCurrentLearningCharacter();
       print('🎯 다음 학습 문자: $nextCharacter');
+
+      // 쌍자음/복합모음 리스트
+      const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+      
+      // 다음 문자가 쌍자음/복합모음이면 버퍼 초기화
+      if (sequenceSigns.contains(nextCharacter)) {
+        print('🔄 다음 문자가 시퀀스 사인 → 버퍼 초기화: $nextCharacter');
+        await RecognitionService.clearSequenceBuffer();
+      }
 
       // 성공 메시지 표시
       if (nextCharacter == '완료') {
@@ -2321,9 +2398,9 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
               recognitionString = data['accumulated_string'] ?? '';
             });
 
-            // 퀴즈 모드일 때 정답 확인
+            // 퀴즈 모드일 때 손모양 분석 및 정답 확인
             if (isQuizStarted && currentRecognition.isNotEmpty) {
-              _checkQuizAnswer();
+              _analyzeHandShapeForQuiz();
             }
 
             // 학습 모드일 때 손모양 분석 및 진도 체크

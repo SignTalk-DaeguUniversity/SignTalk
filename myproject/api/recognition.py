@@ -20,7 +20,9 @@ recognition_bp = Blueprint('recognition', __name__)
 active_sessions = {}
 
 # ==== 쌍자음/복합모음 정의 ====
-SEQUENCE_SIGNS = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ']  # 시퀀스 모델 사용
+# 시퀀스 모델 사용 (연속 동작 필요)
+SEQUENCE_SIGNS = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ']
+# ㅚ, ㅟ, ㅢ는 정적 모델로 인식 (한 번에 가능)
 
 DOUBLE_CONSONANT_MAP = {
     'ㄱ': 'ㄲ',
@@ -157,26 +159,26 @@ def analyze_sign_accuracy(image_data, target_sign, language, user_id=None):
     if target_sign in SEQUENCE_SIGNS:
         print(f"🔄 시퀀스 사인 감지: {target_sign}")
         
-        # 시퀀스 모델이 없으면 임시로 높은 점수 부여 (학습 진행 가능하도록)
+        # 시퀀스 모델이 없으면 에러 반환
         if ksl_seq_model is None:
-            print("⚠️ 시퀀스 모델 없음 - 임시 통과 처리")
+            print("❌ 시퀀스 모델 없음 - 학습 필요")
             return {
-                'accuracy': 85.0,
-                'confidence': 0.85,
+                'accuracy': 0.0,
+                'confidence': 0.0,
                 'feedback': {
-                    'level': 'very_good',
-                    'message': f'"{target_sign}" 동작을 잘하고 있어요! 👍',
-                    'suggestions': ['시퀀스 모델 학습 중입니다', '계속 연습하세요!'],
-                    'color': 'lightgreen',
-                    'score': 'A'
+                    'level': 'error',
+                    'message': f'"{target_sign}" 인식을 위한 모델이 준비되지 않았습니다',
+                    'suggestions': ['시퀀스 모델 학습이 필요합니다', '관리자에게 문의하세요'],
+                    'color': 'red',
+                    'score': 'F'
                 },
-                'hand_detected': True,
+                'hand_detected': False,
                 'target_sign': target_sign,
-                'predicted_sign': target_sign,
-                'is_correct': True,
+                'predicted_sign': None,
+                'is_correct': False,
                 'language': language,
-                'model_type': 'sequence_fallback',
-                'temporary_pass': True
+                'model_type': 'sequence_not_available',
+                'error': 'Sequence model not loaded'
             }
         
         result = analyze_sequence_sign(image_data, target_sign, language, user_id)
@@ -207,33 +209,34 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
         
         user_buffer = sequence_buffers[user_id]
         
-        # 목표가 바뀌면 버퍼 초기화
+        # 목표가 바뀌면 버퍼 초기화 (중요!)
         if user_buffer.get('target') != target_sign:
             print(f"🔄 목표 변경: {user_buffer.get('target')} → {target_sign}, 버퍼 초기화")
-            user_buffer['buffer'].clear()
-            user_buffer['prev_xy'].clear()
+            user_buffer['buffer'] = deque(maxlen=seq_max_timesteps)  # 새 deque 생성
+            user_buffer['prev_xy'] = {}  # 새 dict 생성
             user_buffer['target'] = target_sign
+            print(f"✅ 버퍼 초기화 완료: 크기={len(user_buffer['buffer'])}")
         # 1. 이미지 디코딩
         print(f"📸 Step 1: 이미지 디코딩 시작")
         if not image_data:
-            print("⚠️ image_data 없음 - 자동 통과 처리")
+            print("⚠️ image_data 없음")
             return {
-                'accuracy': 85.0,
-                'confidence': 0.85,
+                'accuracy': 0.0,
+                'confidence': 0.0,
                 'feedback': {
-                    'level': 'very_good',
-                    'message': f'"{target_sign}" 동작을 잘하고 있어요! 👍',
-                    'suggestions': ['계속 연습하세요!'],
-                    'color': 'lightgreen',
-                    'score': 'A'
+                    'level': 'error',
+                    'message': '이미지 데이터가 없습니다',
+                    'suggestions': ['카메라를 확인하세요'],
+                    'color': 'red',
+                    'score': 'F'
                 },
-                'hand_detected': True,
+                'hand_detected': False,
                 'target_sign': target_sign,
-                'predicted_sign': target_sign,
-                'is_correct': True,
+                'predicted_sign': None,
+                'is_correct': False,
                 'language': language,
                 'model_type': 'sequence_no_image',
-                'auto_pass': True
+                'error': 'No image data'
             }
         
         image = decode_base64_image(image_data)
@@ -254,8 +257,10 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
         
         if not results.multi_hand_landmarks:
             # 손이 없으면 버퍼 초기화
-            user_buffer['buffer'].clear()
-            user_buffer['prev_xy'].clear()
+            if len(user_buffer['buffer']) > 0:
+                print(f"👋 손 감지 안됨 - 버퍼 초기화 (이전 크기: {len(user_buffer['buffer'])})")
+                user_buffer['buffer'].clear()
+                user_buffer['prev_xy'].clear()
             return {
                 'accuracy': 0.0,
                 'confidence': 0.0,
@@ -310,9 +315,9 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
         
         # 충분한 프레임이 모이면 예측
         buffer_size = len(user_buffer['buffer'])
-        min_frames = 3  # 최소 3프레임만 있으면 예측 (매우 빠른 인식)
+        min_frames = 5  # 최소 5프레임 (더 안정적인 인식)
         
-        print(f"🔢 버퍼 상태: {buffer_size}/{seq_max_timesteps} 프레임 (최소: {min_frames})")
+        print(f"🔢 버퍼 상태: {buffer_size}/{seq_max_timesteps} 프레임 (최소: {min_frames}, 목표: {target_sign})")
         
         if buffer_size < min_frames:
             # 프레임 수집 중
@@ -370,23 +375,23 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
         # 8. 정확도 계산
         is_correct = predicted_sign == target_sign
         
-        # 복합모음은 더 관대하게 처리 (학습 난이도 조정)
+        # 정확도 계산 (엄격하게)
         if is_correct:
-            accuracy = min(100, confidence_score * 100 + 10)  # 보너스 10%
+            accuracy = confidence_score * 100
         else:
-            # 틀렸어도 손이 감지되면 부분 점수
-            accuracy = max(60, confidence_score * 70)  # 최소 60%
+            # 틀렸으면 낮은 점수
+            accuracy = confidence_score * 50
         
         # 9. 피드백 생성
         feedback = generate_detailed_feedback(accuracy, target_sign, language)
         
-        # 복합모음 특별 메시지
-        if not is_correct and accuracy >= 60:
-            feedback['message'] = f'"{target_sign}" 동작을 연습 중이에요! 계속 해보세요 💪'
+        # 틀렸을 때 메시지
+        if not is_correct:
+            feedback['message'] = f'"{predicted_sign}"이(가) 인식되었습니다. "{target_sign}"을(를) 다시 시도하세요'
             feedback['suggestions'] = [
-                f'예측: {predicted_sign} (목표: {target_sign})',
-                '천천히 정확하게 동작하세요',
-                '여러 번 연습하면 더 좋아질 거예요'
+                f'예측: {predicted_sign} ≠ 목표: {target_sign}',
+                '동작을 천천히 정확하게 수행하세요',
+                '참고 영상을 다시 확인하세요'
             ]
         
         return {
@@ -399,8 +404,7 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
             'is_correct': is_correct,
             'language': language,
             'model_type': 'sequence',
-            'buffer_size': buffer_size,
-            'lenient_mode': True  # 관대한 모드 플래그
+            'buffer_size': buffer_size
         }
         
     except Exception as e:
@@ -741,38 +745,25 @@ def analyze_hand_shape():
         # 이미지 데이터 가져오기 (프론트엔드에서 보내거나, 캐시에서 가져오기)
         image_data = data.get('image_data', '')
         
-        # 이미지 데이터가 없으면 최근 인식 결과 사용
+        # 이미지 데이터가 없으면 파일에서 프레임 로드
         if not image_data:
-            from app import latest_char
+            import tempfile
+            import base64
             
-            # 최근 인식된 문자 가져오기
-            recognized_sign = latest_char.get(language, '')
+            frame_path = os.path.join(tempfile.gettempdir(), f'ksl_frame_{language}.jpg')
             
-            if recognized_sign:
-                print(f"📊 최근 인식 결과 사용: {recognized_sign}")
-                
-                # 최근 인식 결과 기반으로 피드백 생성
-                is_correct = recognized_sign == target_sign
-                accuracy = 85.0 if is_correct else 60.0
-                confidence = 0.85 if is_correct else 0.60
-                
-                return jsonify({
-                    'analysis': {
-                        'accuracy': accuracy,
-                        'confidence': confidence,
-                        'feedback': generate_detailed_feedback(accuracy, target_sign, language),
-                        'hand_detected': True,
-                        'target_sign': target_sign,
-                        'predicted_sign': recognized_sign,
-                        'is_correct': is_correct,
-                        'language': language,
-                        'model_type': 'cached_result'
-                    },
-                    'message': '최근 인식 결과 기반 분석 완료',
-                    'model_type': 'cached_result'
-                }), 200
+            if os.path.exists(frame_path):
+                # 파일에서 이미지 읽기
+                frame = cv2.imread(frame_path)
+                if frame is not None:
+                    # Base64로 인코딩
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    image_data = 'data:image/jpeg;base64,' + base64.b64encode(buffer).decode('utf-8')
+                    print(f"📸 파일에서 프레임 로드: {frame.shape}")
+                else:
+                    print(f"⚠️ 프레임 파일 읽기 실패: {frame_path}")
             else:
-                print(f"⚠️ 최근 인식 결과 없음 (language={language})")
+                print(f"⚠️ 프레임 파일 없음: {frame_path}")
         
         # 손모양 분석 수행 (하이브리드)
         analysis_result = analyze_sign_accuracy(

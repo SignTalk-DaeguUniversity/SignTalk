@@ -76,8 +76,9 @@ DOUBLE_CONSONANT_MAP = {
 
 
 
-# ==== 현재 프레임 저장용 전역 변수 ====
-current_frame_cache = {}  # {lang_key: frame}
+# ==== 현재 프레임 저장용 (파일 기반) ====
+import tempfile
+FRAME_CACHE_DIR = tempfile.gettempdir()  # /tmp 또는 시스템 임시 폴더
 
 # ==== 공통 영상 스트리밍 (H5 모델용) ====
 def generate_frames(model, labels, lang_key, camera_device=0):
@@ -130,8 +131,9 @@ def generate_frames(model, labels, lang_key, camera_device=0):
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             current_time = time.time()
             
-            # 현재 프레임을 캐시에 저장 (API에서 사용)
-            current_frame_cache[lang_key] = image.copy()
+            # 현재 프레임을 파일로 저장 (API에서 사용)
+            frame_path = os.path.join(FRAME_CACHE_DIR, f'ksl_frame_{lang_key}.jpg')
+            cv2.imwrite(frame_path, image)
 
             # MediaPipe 항상 활성화
             result = hands.process(rgb_image)
@@ -468,4 +470,5 @@ def process_uploaded_image(image, lang):
 
 if __name__ == '__main__':
     # 실제 기기에서 접근 가능하도록 0.0.0.0으로 바인딩
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    # debug=False: 프로세스 1개만 실행 (캐시 공유 문제 해결)
+    app.run(debug=False, host='0.0.0.0', port=5002)

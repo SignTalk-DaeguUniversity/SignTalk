@@ -473,4 +473,44 @@ class RecognitionService {
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }
+
+  // 시퀀스 버퍼 초기화 (쌍자음/복합모음용)
+  static Future<Map<String, dynamic>> clearSequenceBuffer() async {
+    try {
+      final token = await _getToken();
+      if (token == null) {
+        return {'success': false, 'message': '로그인이 필요합니다.'};
+      }
+
+      print('🔄 시퀀스 버퍼 초기화 요청');
+
+      final response = await _tryMultipleUrls(
+        '/api/recognition/clear-buffer',
+        {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        method: 'POST',
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        print('✅ 시퀀스 버퍼 초기화 완료');
+        return {
+          'success': true,
+          'message': data['message'],
+        };
+      } else {
+        print('❌ 시퀀스 버퍼 초기화 실패: ${data['error']}');
+        return {
+          'success': false,
+          'message': data['error'] ?? '버퍼 초기화에 실패했습니다.',
+        };
+      }
+    } catch (e) {
+      print('❌ 시퀀스 버퍼 초기화 예외: $e');
+      return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
+    }
+  }
 }
