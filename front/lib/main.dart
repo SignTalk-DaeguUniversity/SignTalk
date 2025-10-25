@@ -128,6 +128,8 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
   String currentRecognition = '';
   String recognitionString = '';
   Timer? _recognitionTimer;
+  Timer? _sequenceAnalysisTimer; // 시퀀스 분석용 타이머
+  String? _lastAnalyzedTarget; // 마지막 분석 목표
 
   // 진도 관련 상태
   Map<String, dynamic>? userProgress;
@@ -580,6 +582,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
     _timer?.cancel();
     _recognitionTimer?.cancel();
     _correctAnswerTimer?.cancel();
+    _sequenceAnalysisTimer?.cancel();
     // 카메라는 앱 종료 시에만 dispose (재사용을 위해)
     _cameraController?.dispose();
     super.dispose();
@@ -731,7 +734,7 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 손모양 분석 수행 (학습 모드에서)
   Future<void> _analyzeHandShape() async {
-    if (!isLearningMode || currentRecognition.isEmpty) return;
+    if (!isLearningMode) return;
 
     setState(() {
       isAnalyzing = true;
@@ -743,6 +746,22 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
       
       // 복합모음/쌍자음 리스트
       const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+      
+      // 목표가 변경되었는지 확인
+      if (_lastAnalyzedTarget != targetCharacter) {
+        print('🔄 목표 변경 감지: $_lastAnalyzedTarget → $targetCharacter');
+        _lastAnalyzedTarget = targetCharacter;
+        
+        // 시퀀스 사인이면 버퍼 초기화
+        if (sequenceSigns.contains(targetCharacter)) {
+          await RecognitionService.clearSequenceBuffer();
+          // 주기적 분석 시작
+          _startSequenceAnalysis(targetCharacter);
+        } else {
+          // 일반 사인이면 타이머 중지
+          _stopSequenceAnalysis();
+        }
+      }
       
       // 복합모음/쌍자음인 경우 목표 문자를 그대로 사용
       final targetSign = sequenceSigns.contains(targetCharacter) 
@@ -767,6 +786,19 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         setState(() {
           handAnalysis = result['analysis'];
         });
+        
+        // 시퀀스 사인인 경우 수집 진행률 표시
+        if (sequenceSigns.contains(targetCharacter)) {
+          final analysis = result['analysis'];
+          final isCollecting = analysis['collecting'] == true;
+          final bufferSize = analysis['buffer_size'] ?? 0;
+          
+          if (isCollecting) {
+            print('📊 시퀀스 수집 중: $bufferSize/5 프레임');
+          } else if (analysis['predicted_sign'] != null) {
+            print('✅ 시퀀스 예측 완료: ${analysis['predicted_sign']} (정확도: ${analysis['accuracy']}%)');
+          }
+        }
       }
     } catch (e) {
       print('손모양 분석 실패: $e');
@@ -775,6 +807,49 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         isAnalyzing = false;
       });
     }
+  }
+
+  // 시퀀스 분석 시작 (주기적 호출)
+  void _startSequenceAnalysis(String targetSign) {
+    print('🎬 시퀀스 분석 타이머 시작: $targetSign');
+    
+    // 기존 타이머 중지
+    _sequenceAnalysisTimer?.cancel();
+    
+    // 200ms마다 분석 요청 (초당 5프레임)
+    _sequenceAnalysisTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (timer) async {
+        if (!isLearningMode || getCurrentLearningCharacter() != targetSign) {
+          // 학습 모드가 아니거나 목표가 변경되면 중지
+          _stopSequenceAnalysis();
+          return;
+        }
+        
+        try {
+          final result = await RecognitionService.analyzeSequenceContinuous(
+            targetSign: targetSign,
+            language: 'ksl',
+            sessionId: currentSessionId,
+          );
+          
+          if (result['success'] && mounted) {
+            setState(() {
+              handAnalysis = result['analysis'];
+            });
+          }
+        } catch (e) {
+          print('시퀀스 분석 오류: $e');
+        }
+      },
+    );
+  }
+
+  // 시퀀스 분석 중지
+  void _stopSequenceAnalysis() {
+    print('⏹️ 시퀀스 분석 타이머 중지');
+    _sequenceAnalysisTimer?.cancel();
+    _sequenceAnalysisTimer = null;
   }
 
   // 퀴즈 모드용 손모양 분석 및 정답 체크
@@ -980,6 +1055,13 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
         double? accuracy = handAnalysis!['accuracy'] != null 
             ? (handAnalysis!['accuracy'] as num).toDouble() 
             : null;
+        bool? isCollecting = handAnalysis!['collecting'];
+        
+        // 수집 중이면 아직 판단하지 않음
+        if (isCollecting == true) {
+          print('📊 시퀀스 수집 중... (${handAnalysis!['buffer_size']}/5 프레임)');
+          return;
+        }
         
         // 조건: 백엔드가 정답으로 예측 + 정확도 80% 이상
         if (isCorrectPrediction == true && accuracy != null && accuracy >= 80.0) {
@@ -1779,9 +1861,19 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
                   showCorrectAnswer = false;
                   isAnswerCorrect = false;
                   _shuffledQuizData.clear();
+                  _lastAnalyzedTarget = null; // 목표 초기화
                 });
                 _stopTimer(); // 타이머 정지
                 _startLearningSession();
+                
+                // 현재 학습 문자가 시퀀스 사인이면 분석 시작
+                final currentChar = getCurrentLearningCharacter();
+                const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+                if (sequenceSigns.contains(currentChar)) {
+                  Future.delayed(const Duration(milliseconds: 500), () {
+                    _startSequenceAnalysis(currentChar);
+                  });
+                }
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -2835,6 +2927,10 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
 
   // 손모양 분석 결과 표시
   Widget _buildHandAnalysisResult() {
+    // 시퀀스 수집 중인지 확인
+    final isCollecting = handAnalysis?['collecting'] == true;
+    final bufferSize = handAnalysis?['buffer_size'] ?? 0;
+    
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -2848,6 +2944,41 @@ class _SignTalkHomePageState extends State<SignTalkHomePage> {
           const Text(
             '분석 중...',
             style: TextStyle(fontSize: 10, color: Color(0xFF9CA3AF)),
+          ),
+        ] else if (isCollecting) ...[
+          // 시퀀스 수집 진행률 표시
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 32,
+                height: 32,
+                child: CircularProgressIndicator(
+                  value: bufferSize / 5.0,
+                  strokeWidth: 3,
+                  backgroundColor: Colors.grey.shade200,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF4299E1)),
+                ),
+              ),
+              Text(
+                '$bufferSize',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF4299E1),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '동작 수집 중',
+            style: TextStyle(fontSize: 9, color: Color(0xFF4299E1)),
+            textAlign: TextAlign.center,
+          ),
+          Text(
+            '$bufferSize/5 프레임',
+            style: const TextStyle(fontSize: 8, color: Color(0xFF9CA3AF)),
           ),
         ] else if (handAnalysis != null) ...[
           // 정확도 표시
