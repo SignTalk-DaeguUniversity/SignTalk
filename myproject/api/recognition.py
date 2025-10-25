@@ -204,7 +204,8 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
             sequence_buffers[user_id] = {
                 'buffer': deque(maxlen=seq_max_timesteps),
                 'prev_xy': {},
-                'target': target_sign
+                'target': target_sign,
+                'last_update': None
             }
         
         user_buffer = sequence_buffers[user_id]
@@ -215,7 +216,20 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
             user_buffer['buffer'] = deque(maxlen=seq_max_timesteps)  # 새 deque 생성
             user_buffer['prev_xy'] = {}  # 새 dict 생성
             user_buffer['target'] = target_sign
+            user_buffer['last_update'] = None
             print(f"✅ 버퍼 초기화 완료: 크기={len(user_buffer['buffer'])}")
+        
+        # 타임아웃 체크 (5초 동안 업데이트 없으면 버퍼 초기화)
+        import time
+        current_time = time.time()
+        if user_buffer.get('last_update') is not None:
+            time_diff = current_time - user_buffer['last_update']
+            if time_diff > 5.0:
+                print(f"⏰ 타임아웃 ({time_diff:.1f}초) - 버퍼 초기화")
+                user_buffer['buffer'].clear()
+                user_buffer['prev_xy'].clear()
+        
+        user_buffer['last_update'] = current_time
         # 1. 이미지 디코딩
         print(f"📸 Step 1: 이미지 디코딩 시작")
         if not image_data:
@@ -332,7 +346,8 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
                     'message': f'"{target_sign}" 동작을 수집 중입니다... ({buffer_size}/{min_frames})',
                     'suggestions': [
                         '천천히 동작을 계속하세요',
-                        '손을 카메라에 잘 보이게 유지하세요'
+                        '손을 카메라에 잘 보이게 유지하세요',
+                        f'진행률: {int(progress_ratio * 100)}%'
                     ],
                     'color': 'blue',
                     'score': '-'
@@ -344,7 +359,8 @@ def analyze_sequence_sign(image_data, target_sign, language, user_id):
                 'language': language,
                 'model_type': 'sequence',
                 'buffer_size': buffer_size,
-                'collecting': True
+                'collecting': True,
+                'progress': int(progress_ratio * 100)
             }
         
         # 5. 시퀀스 패딩 및 정규화
