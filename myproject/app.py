@@ -1,10 +1,16 @@
+import sys
+import os
+
+# Python 캐시 비활성화 
+sys.dont_write_bytecode = True
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+
 from flask import Flask, Response, jsonify, request
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
 import tensorflow as tf
-import os
 from datetime import datetime
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -13,7 +19,7 @@ from auth.models import db
 from auth.routes import auth_bp, bcrypt
 from api.progress import progress_bp
 from api.learning import learning_bp
-from api.recognition import recognition_bp
+from api.recognition import recognition_bp, ksl_model, labels_ksl, hands, mp_hands
 from api.quiz import quiz_bp
 from api.jamo_decompose import jamo_decompose_bp
 from api.jamo_compose import jamo_compose_bp
@@ -47,33 +53,10 @@ app.register_blueprint(quiz_bp)
 app.register_blueprint(jamo_decompose_bp)
 app.register_blueprint(jamo_compose_bp)
 
-# ==== 경로 설정 ====
-BASE_DIR = os.path.dirname(__file__)
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+# ==== 모델은 recognition.py에서 초기화됨 ====
+# initialize_ai_models()가 자동으로 호출됨
 
-KSL_MODEL_PATH = os.path.join(MODEL_DIR, "ksl_model.h5")
-KSL_LABELS_PATH = os.path.join(MODEL_DIR, "ksl_labels.npy")
-
-# ==== 모델 로딩 (H5 모델) ====
-try:
-    ksl_model = tf.keras.models.load_model(KSL_MODEL_PATH)
-    labels_ksl = np.load(KSL_LABELS_PATH, allow_pickle=True)
-
-    print("✅ KSL H5 모델 및 라벨 로딩 성공")
-    print(f"   - 모델 경로: {KSL_MODEL_PATH}")
-    print(f"   - 라벨 개수: {len(labels_ksl)}")
-except Exception as e:
-    print(f"❌ 모델 로딩 실패: {e}")
-    print("📱 API 서버만 실행됩니다 (수어 인식 기능 비활성화)")
-    ksl_model = None
-
-# ==== Mediapipe 설정 ====
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5)
+# MediaPipe 그리기 유틸리티
 mp_draw = mp.solutions.drawing_utils
 
 # ==== 인식 결과 저장 ====
@@ -93,8 +76,13 @@ DOUBLE_CONSONANT_MAP = {
 
 
 
+# ==== 현재 프레임 저장용 (파일 기반) ====
+import tempfile
+FRAME_CACHE_DIR = tempfile.gettempdir()  # /tmp 또는 시스템 임시 폴더
+
 # ==== 공통 영상 스트리밍 (H5 모델용) ====
 def generate_frames(model, labels, lang_key, camera_device=0):
+    global current_frame_cache
     # 카메라 열기 (macOS 호환성 개선)
     print(f"📷 카메라 {camera_device}번 열기 시도...")
     cap = cv2.VideoCapture(camera_device)
@@ -120,10 +108,11 @@ def generate_frames(model, labels, lang_key, camera_device=0):
     print(f"📷 카메라 설정 완료: {actual_width}x{actual_height} @ {actual_fps}fps")
 
     last_prediction_time = 0
-    prediction_interval = 0.4  # 0.4초마다 인식 (안정성 우선)
+    prediction_interval = 0.15  # 0.15초마다 인식 (빠른 응답)
     prev_idx = -1
     consecutive_same = 0  # 연속 같은 결과 카운트
     last_predicted_char = ""
+    confidence_threshold = 0.6  # 신뢰도 임계값 상향
     
     # MediaPipe 항상 활성화 (성능 최적화)
     print("🚀 MediaPipe 항상 활성화 모드")
@@ -141,6 +130,10 @@ def generate_frames(model, labels, lang_key, camera_device=0):
             image = cv2.flip(frame, 1)  # 좌우 반전
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             current_time = time.time()
+            
+            # 현재 프레임을 파일로 저장 (API에서 사용)
+            frame_path = os.path.join(FRAME_CACHE_DIR, f'ksl_frame_{lang_key}.jpg')
+            cv2.imwrite(frame_path, image)
 
             # MediaPipe 항상 활성화
             result = hands.process(rgb_image)
@@ -153,56 +146,45 @@ def generate_frames(model, labels, lang_key, camera_device=0):
                     if current_time - last_prediction_time >= prediction_interval:
                         coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
                         input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
+                        
+                        # 정규화 적용 (recognition.py와 동일)
+                        from api.recognition import ksl_norm_mean, ksl_norm_std
+                        if ksl_norm_mean is not None and ksl_norm_std is not None:
+                            input_data = (input_data - ksl_norm_mean) / ksl_norm_std
+                        
                         prediction = model.predict(input_data, verbose=0)
                         idx = np.argmax(prediction)
                         confidence = float(np.max(prediction))
 
-                        # 신뢰도 임계값 (쌍자음 인식 개선)
-                        min_confidence = 0.4  # 적당한 신뢰도로 조정
-                        if 0 <= idx < len(labels) and confidence > min_confidence:
+                        # 신뢰도 임계값
+                        if 0 <= idx < len(labels) and confidence > confidence_threshold:
                             predicted_char = labels[idx]
                             
-                            # 연속 같은 결과 확인 (안정성 향상)
-                            if predicted_char == last_predicted_char:
-                                consecutive_same += 1
-                            else:
-                                consecutive_same = 1
-                                last_predicted_char = predicted_char
+                            # 즉시 업데이트 (빠른 응답)
+                            latest_char[lang_key] = predicted_char
+                            current_time_sec = time.time()
+                            time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
                             
-                            # 2번 연속 같은 결과일 때 업데이트 (쌍자음 인식 최적화)
-                            if consecutive_same >= 2:
-                                current_time_sec = time.time()
-                                time_diff = current_time_sec - last_recognized_time.get(lang_key, 0)
+                            # 쌍자음 처리 로직
+                            if (predicted_char in DOUBLE_CONSONANT_MAP and 
+                                predicted_char == last_recognized_char.get(lang_key, '') and 
+                                0.5 < time_diff < 3.0):
                                 
-                                # 쌍자음 처리 로직 (개선)
-                                # 조건: 같은 자음을 0.5~3초 간격으로 두 번 인식
-                                if (predicted_char in DOUBLE_CONSONANT_MAP and 
-                                    predicted_char == last_recognized_char.get(lang_key, '') and 
-                                    0.5 < time_diff < 3.0):
-                                    
-                                    # 쌍자음으로 변환
-                                    double_char = DOUBLE_CONSONANT_MAP[predicted_char]
-                                    latest_char[lang_key] = double_char
-                                    print(f"🎯🎯 쌍자음 완성: {predicted_char} + {predicted_char} → {double_char} (간격: {time_diff:.1f}초)")
-                                    
-                                    # 쌍자음 완성 후 초기화
-                                    last_recognized_char[lang_key] = ""
-                                    last_recognized_time[lang_key] = 0
-                                    
-                                else:
-                                    # 단일 자음으로 인식
-                                    latest_char[lang_key] = predicted_char
-                                    
-                                    # 쌍자음 가능 문자 표시
-                                    if predicted_char in DOUBLE_CONSONANT_MAP:
-                                        remaining_time = 3.0 - time_diff if time_diff > 0 else 3.0
-                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f}) → 다시 인식하면 {DOUBLE_CONSONANT_MAP[predicted_char]} (남은시간: {remaining_time:.1f}초)")
-                                    else:
-                                        print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
-                                    
-                                    # 쌍자음 대기 정보 저장
-                                    last_recognized_char[lang_key] = predicted_char
-                                    last_recognized_time[lang_key] = current_time_sec
+                                # 쌍자음으로 변환
+                                double_char = DOUBLE_CONSONANT_MAP[predicted_char]
+                                latest_char[lang_key] = double_char
+                                print(f"🎯🎯 쌍자음: {predicted_char} + {predicted_char} → {double_char}")
+                                
+                                # 초기화
+                                last_recognized_char[lang_key] = ""
+                                last_recognized_time[lang_key] = 0
+                            else:
+                                # 일반 인식
+                                print(f"🎯 {predicted_char} 인식 (신뢰도: {confidence:.3f})")
+                                
+                                # 쌍자음 대기 정보 저장
+                                last_recognized_char[lang_key] = predicted_char
+                                last_recognized_time[lang_key] = current_time_sec
                         else:
                             latest_char[lang_key] = ""
                             consecutive_same = 0
@@ -461,6 +443,11 @@ def process_uploaded_image(image, lang):
                 coords = [v for lm in hand_landmarks.landmark for v in (lm.x, lm.y)]
                 input_data = np.array(coords, dtype=np.float32).reshape(1, -1)
                 
+                # 정규화 적용
+                from api.recognition import ksl_norm_mean, ksl_norm_std
+                if ksl_norm_mean is not None and ksl_norm_std is not None:
+                    input_data = (input_data - ksl_norm_mean) / ksl_norm_std
+                
                 # 모델 추론 (H5 모델)
                 prediction = model.predict(input_data, verbose=0)
                 
@@ -483,4 +470,5 @@ def process_uploaded_image(image, lang):
 
 if __name__ == '__main__':
     # 실제 기기에서 접근 가능하도록 0.0.0.0으로 바인딩
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    # debug=False: 프로세스 1개만 실행 (캐시 공유 문제 해결)
+    app.run(debug=False, host='0.0.0.0', port=5002)

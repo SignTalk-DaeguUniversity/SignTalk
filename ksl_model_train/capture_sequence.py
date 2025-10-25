@@ -19,6 +19,9 @@ USE_LANDMARKS = {
     8: "index_tip",
 }
 
+# Target count
+TARGET_COUNT = 50  # 목표 수집 개수
+
 # Ask label
 label = ""
 while not label.strip():
@@ -26,6 +29,12 @@ while not label.strip():
 
 label_dir = os.path.join(OUT_ROOT, label)
 os.makedirs(label_dir, exist_ok=True)
+
+# 기존 파일 개수 확인
+existing_count = len([f for f in os.listdir(label_dir) if f.endswith('.csv')])
+print(f"\n📊 현재 '{label}' 데이터: {existing_count}개")
+print(f"🎯 목표: {TARGET_COUNT}개 (남은 개수: {max(0, TARGET_COUNT - existing_count)}개)")
+print(f"{'='*60}\n")
 
 # MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -103,6 +112,27 @@ while True:
         continue
 
     # On SPACE: capture a short sequence
+    print("⏱️  3초 후 녹화 시작! 준비하세요...")
+    
+    # 3초 카운트다운
+    for countdown in range(3, 0, -1):
+        ret_cd, frame_cd = cap.read()
+        if ret_cd:
+            img_cd = cv2.flip(frame_cd, 1)
+            cv2.putText(
+                img_cd,
+                f"Recording in {countdown}...",
+                (50, 100),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                2,
+                (0, 0, 255),
+                3,
+            )
+            cv2.imshow("Sequence Capture (KSL)", img_cd)
+            cv2.waitKey(1000)
+    
+    print("🎬 녹화 시작! 지금 움직이세요!")
+    
     seq_rows = []
     prev_xy = {}
     frames_to_capture = WINDOW_FRAMES
@@ -114,6 +144,27 @@ while True:
         img2 = cv2.flip(frame2, 1)
         rgb2 = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
         res2 = hands.process(rgb2)
+        
+        # 손 랜드마크 그리기
+        if res2.multi_hand_landmarks:
+            for hand_landmarks in res2.multi_hand_landmarks:
+                mp.solutions.drawing_utils.draw_landmarks(
+                    img2, hand_landmarks, mp_hands.HAND_CONNECTIONS
+                )
+        
+        # 녹화 중 표시
+        cv2.circle(img2, (30, 30), 15, (0, 0, 255), -1)  # 빨간 점
+        cv2.putText(
+            img2,
+            f"RECORDING... {fi+1}/{frames_to_capture}",
+            (60, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            2,
+        )
+        cv2.imshow("Sequence Capture (KSL)", img2)
+        cv2.waitKey(1)
 
         if res2.multi_hand_landmarks:
             lms = res2.multi_hand_landmarks[0].landmark
@@ -153,11 +204,105 @@ while True:
         # pace capture
         time.sleep(max(0, 1.0 / FPS_TARGET - 0.001))
 
+    print(f"🎬 녹화 완료! {len(seq_rows)}개 프레임 수집됨")
+    
     if seq_rows:
         out_path = write_sequence_csv(seq_rows, label_dir, label)
-        print(f"Saved sequence: {out_path} | frames: ~{frames_to_capture}")
+        current_count = len([f for f in os.listdir(label_dir) if f.endswith('.csv')])
+        remaining = max(0, TARGET_COUNT - current_count)
+        
+        print(f"✅ 저장 완료: {os.path.basename(out_path)} | 프레임: ~{frames_to_capture}")
+        print(f"📊 진행률: {current_count}/{TARGET_COUNT}개 (남은 개수: {remaining}개)")
+        
+        # 카메라 화면에 저장 완료 메시지 표시 (2초간)
+        for _ in range(40):  # 2초 = 40 프레임 (20fps)
+            ret_msg, frame_msg = cap.read()
+            if ret_msg:
+                img_msg = cv2.flip(frame_msg, 1)
+                
+                # 배경 박스
+                cv2.rectangle(img_msg, (50, 80), (590, 200), (0, 255, 0), -1)
+                
+                # 저장 완료 메시지
+                cv2.putText(
+                    img_msg,
+                    "SAVED!",
+                    (200, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    2,
+                    (255, 255, 255),
+                    4,
+                )
+                
+                # 진행률
+                cv2.putText(
+                    img_msg,
+                    f"{current_count}/{TARGET_COUNT} ({remaining} left)",
+                    (150, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 255, 255),
+                    2,
+                )
+                
+                cv2.imshow("Sequence Capture (KSL)", img_msg)
+                cv2.waitKey(50)
+        
+        # 목표 달성 시 알림
+        if current_count >= TARGET_COUNT:
+            print(f"\n{'='*60}")
+            print(f"🎉🎉🎉 축하합니다! '{label}' 데이터 수집 완료! 🎉🎉🎉")
+            print(f"총 {current_count}개 수집됨 (목표: {TARGET_COUNT}개)")
+            print(f"{'='*60}\n")
+            print("다른 라벨을 수집하려면 ESC를 누르고 다시 실행하세요.")
+            
+            # 카메라 화면에도 완료 메시지
+            for _ in range(60):  # 3초간 표시
+                ret_done, frame_done = cap.read()
+                if ret_done:
+                    img_done = cv2.flip(frame_done, 1)
+                    cv2.rectangle(img_done, (30, 100), (610, 300), (0, 255, 0), -1)
+                    cv2.putText(
+                        img_done,
+                        "COMPLETE!",
+                        (120, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        2.5,
+                        (255, 255, 255),
+                        5,
+                    )
+                    cv2.putText(
+                        img_done,
+                        f"{current_count}/{TARGET_COUNT} collected",
+                        (150, 250),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        (255, 255, 255),
+                        3,
+                    )
+                    cv2.imshow("Sequence Capture (KSL)", img_done)
+                    cv2.waitKey(50)
+        print()
     else:
-        print("No sequence captured (hand not detected). Try again.")
+        print("❌ 손이 감지되지 않았습니다. 다시 시도하세요.\n")
+        
+        # 카메라 화면에 에러 메시지
+        for _ in range(40):  # 2초간 표시
+            ret_err, frame_err = cap.read()
+            if ret_err:
+                img_err = cv2.flip(frame_err, 1)
+                cv2.rectangle(img_err, (50, 100), (590, 200), (0, 0, 255), -1)
+                cv2.putText(
+                    img_err,
+                    "NO HAND DETECTED!",
+                    (80, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.5,
+                    (255, 255, 255),
+                    3,
+                )
+                cv2.imshow("Sequence Capture (KSL)", img_err)
+                cv2.waitKey(50)
 
 cap.release()
 cv2.destroyAllWindows()

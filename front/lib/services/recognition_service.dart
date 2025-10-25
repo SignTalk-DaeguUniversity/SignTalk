@@ -473,4 +473,102 @@ class RecognitionService {
       return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
     }
   }
+
+  // 시퀀스 버퍼 초기화 (쌍자음/복합모음용)
+  static Future<Map<String, dynamic>> clearSequenceBuffer() async {
+    try {
+      final token = await _getToken();
+      if (token == null) {
+        return {'success': false, 'message': '로그인이 필요합니다.'};
+      }
+
+      print('🔄 시퀀스 버퍼 초기화 요청');
+
+      final response = await _tryMultipleUrls(
+        '/api/recognition/clear-buffer',
+        {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        method: 'POST',
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        print('✅ 시퀀스 버퍼 초기화 완료');
+        return {
+          'success': true,
+          'message': data['message'],
+        };
+      } else {
+        print('❌ 시퀀스 버퍼 초기화 실패: ${data['error']}');
+        return {
+          'success': false,
+          'message': data['error'] ?? '버퍼 초기화에 실패했습니다.',
+        };
+      }
+    } catch (e) {
+      print('❌ 시퀀스 버퍼 초기화 예외: $e');
+      return {'success': false, 'message': '네트워크 오류가 발생했습니다: $e'};
+    }
+  }
+
+  // 시퀀스 사인 여부 확인
+  static bool isSequenceSign(String sign) {
+    const sequenceSigns = ['ㄲ', 'ㄸ', 'ㅃ', 'ㅆ', 'ㅉ', 'ㅘ', 'ㅙ', 'ㅝ', 'ㅞ'];
+    return sequenceSigns.contains(sign);
+  }
+
+  // 주기적인 시퀀스 분석 (프레임 수집용)
+  static Future<Map<String, dynamic>> analyzeSequenceContinuous({
+    required String targetSign,
+    String language = 'ksl',
+    String? sessionId,
+  }) async {
+    try {
+      final token = await _getToken();
+      if (token == null) {
+        return {'success': false, 'message': '로그인이 필요합니다.'};
+      }
+
+      // 시퀀스 사인이 아니면 일반 분석
+      if (!isSequenceSign(targetSign)) {
+        return {'success': false, 'message': '시퀀스 사인이 아닙니다.'};
+      }
+
+      // 백엔드에 분석 요청 (이미지 없이도 서버 스트림에서 프레임 수집)
+      final response = await _tryMultipleUrls(
+        '/api/recognition/analyze-hand',
+        {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'target_sign': targetSign,
+          'language': language,
+          'session_id': sessionId,
+          'image_data': '',  // 서버 스트림 사용
+        }),
+        method: 'POST',
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'analysis': data['analysis'],
+          'message': data['message'],
+        };
+      } else {
+        return {
+          'success': false,
+          'message': data['error'] ?? '분석에 실패했습니다.',
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': '네트워크 오류: $e'};
+    }
+  }
 }
