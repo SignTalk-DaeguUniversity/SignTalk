@@ -236,7 +236,7 @@ flutter run -d chrome
 
 # Android 에뮬레이터로 실행
 flutter emulators --launch Pixel_7
-flutter run
+flutter run emulator-5554
 ```
 
 ### Windows
