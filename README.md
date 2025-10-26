@@ -43,7 +43,7 @@ SignTalk/
 #### Bash 셸
 ```bash
 # 가상환경 생성
-python3 -m venv signtalk_env
+python3.12 -m venv signtalk_env
 
 # 가상환경 활성화
 source signtalk_env/bin/activate
