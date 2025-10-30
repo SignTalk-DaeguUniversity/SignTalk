@@ -2,6 +2,11 @@
 
 수어 번역 및 학습 플랫폼
 
+## 전국공학대전 제출 
+
+![보고서](./image/panel-design.png)
+
+## 학교 제출 
 
 ![판넬 디자인](./image/panel-design.png)
 
