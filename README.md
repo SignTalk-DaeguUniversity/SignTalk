@@ -12,13 +12,35 @@
 
 ![팀소개](./image/image.png)
 
-## 프로젝트 소개 및 시연영상
 
-[![SignTalk 시연영상](https://img.youtube.com/vi/2KltbP_Fdjo/0.jpg)](https://youtu.be/2KltbP_Fdjo)
+## 프로젝트 소개 및 시연 영상
+
+<table>
+<tr>
+<td width="50%" align="center">
+
+### 학교 전용
+
+[![SignTalk 시연영상](https://img.youtube.com/vi/2KltbP_Fdjo/maxresdefault.jpg)](https://youtu.be/2KltbP_Fdjo)
 
 [YouTube에서 보기](https://youtu.be/2KltbP_Fdjo)
 
+</td>
+<td width="50%" align="center">
+
+### 전국 공학 대전 전용
+
+[![SignTalk 시연영상](https://img.youtube.com/vi/jxjoV5boe1Y/maxresdefault.jpg)](https://youtu.be/fxAtTC6NCo0?si=EvG0_MpjZRwICpfw)
+
+
+[YouTube에서 보기](https://youtu.be/jxjoV5boe1Y)
+
+</td>
+</tr>
+</table>
+
 ---
+
 
 ## 목차
 - [프로젝트 구조](#프로젝트-구조)
