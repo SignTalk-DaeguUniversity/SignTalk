@@ -1,10 +1,20 @@
 # SignTalk
 
-수어 번역 및 학습 플랫폼
+AI 기반 수어 지문자 학습 플랫폼
 
-## 전국공학대전 제출 
+## 전국공학대전 제출
 
-![보고서](./image/대구대학교_굿빠이_과제보고서.pdf)
+<div align="center">
+
+### 📄 과제 보고서
+
+[![PDF](https://img.shields.io/badge/PDF-보고서_보기-red?style=for-the-badge&logo=adobe-acrobat-reader)](https://github.com/SignTalk-DaeguUniversity/SignTalk/blob/main/image/대구대학교_굿빠이_과제보고서.pdf)
+
+**[🔍 GitHub에서 보기](https://github.com/SignTalk-DaeguUniversity/SignTalk/blob/main/image/대구대학교_굿빠이_과제보고서.pdf)** | **[📥 다운로드](./image/대구대학교_굿빠이_과제보고서.pdf)**
+
+> 💡 GitHub에서 PDF 파일을 클릭하면 브라우저에서 바로 볼 수 있습니다!
+
+</div>
 
 ## 학교 제출 
 
